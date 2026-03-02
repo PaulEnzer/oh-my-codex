@@ -1017,7 +1017,11 @@ function runCodex(
     // Opt-out: set OMX_MOUSE=0. (closes #128)
     if (process.env.OMX_MOUSE !== '0') {
       try {
-        const tmuxSession = execFileSync('tmux', ['display-message', '-p', '#S'], { encoding: 'utf-8' }).trim();
+        const tmuxPaneTarget = process.env.TMUX_PANE;
+        const displayArgs = tmuxPaneTarget
+          ? ['display-message', '-p', '-t', tmuxPaneTarget, '#S']
+          : ['display-message', '-p', '#S'];
+        const tmuxSession = execFileSync('tmux', displayArgs, { encoding: 'utf-8' }).trim();
         if (tmuxSession) enableMouseScrolling(tmuxSession);
       } catch {
         // Non-fatal: mouse scrolling is a convenience feature

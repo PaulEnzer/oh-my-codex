@@ -664,9 +664,14 @@ export function createTeamSession(
   let registeredResizeHook: { name: string; target: string } | null = null;
   const rollbackPaneIds: string[] = [];
   try {
-    const context = runTmux(['display-message', '-p', '#S:#I #{pane_id}']);
+    const tmuxPaneTarget = process.env.TMUX_PANE;
+    const displayArgs = tmuxPaneTarget
+      ? ['display-message', '-p', '-t', tmuxPaneTarget, '#S:#I #{pane_id}']
+      : ['display-message', '-p', '#S:#I #{pane_id}'];
+    const context = runTmux(displayArgs);
     if (!context.ok) {
-      throw new Error(`failed to detect current tmux target: ${context.stderr}`);
+      const paneHint = tmuxPaneTarget ? ` (TMUX_PANE=${tmuxPaneTarget})` : '';
+      throw new Error(`failed to detect current tmux target${paneHint}: ${context.stderr}`);
     }
     const [sessionAndWindow = '', detectedLeaderPaneId = ''] = context.stdout.split(' ');
     const [sessionName, windowIndex] = (sessionAndWindow || '').split(':');
