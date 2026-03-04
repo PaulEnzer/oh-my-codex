@@ -23,6 +23,7 @@ import {
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
+import { sleepSync } from '../utils/sleep.js';
 
 const REGISTRY_PATH = join(homedir(), '.omx', 'state', 'reply-session-registry.jsonl');
 const REGISTRY_LOCK_PATH = join(homedir(), '.omx', 'state', 'reply-session-registry.lock');
@@ -32,8 +33,6 @@ const LOCK_TIMEOUT_MS = 2000;
 const LOCK_WAIT_TIMEOUT_MS = 4000;
 const LOCK_RETRY_MS = 20;
 const LOCK_STALE_MS = 10000;
-
-const SLEEP_ARRAY = new Int32Array(new SharedArrayBuffer(4));
 
 interface RegistryLockHandle {
   fd: number;
@@ -65,7 +64,7 @@ function ensureRegistryDir(): void {
 }
 
 function sleepMs(ms: number): void {
-  Atomics.wait(SLEEP_ARRAY, 0, 0, ms);
+  sleepSync(ms);
 }
 
 function isPidAlive(pid: number): boolean {

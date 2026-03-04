@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { existsSync } from 'fs';
 import { mkdir, readFile, readdir, writeFile } from 'fs/promises';
 import { join } from 'path';
-import { getStateDir } from '../mcp/state-paths.js';
+import { getStateDir } from '../state/paths.js';
 import { VISUAL_NEXT_ACTIONS_LIMIT, type VisualVerdictStatus } from '../visual/constants.js';
 
 const LEGACY_PRD_PATH = '.omx/prd.json';

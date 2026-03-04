@@ -1,4 +1,4 @@
-import { appendFile, readFile, writeFile, mkdir, rm, rename, readdir, stat } from 'fs/promises';
+import { appendFile, readFile, writeFile, mkdir, rm, rename, readdir } from 'fs/promises';
 import { join, dirname, resolve, sep } from 'path';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
@@ -43,12 +43,19 @@ import {
   writeTeamPhase as writeTeamPhaseImpl,
 } from './state/monitor.js';
 import {
+  withScalingLock as withScalingLockImpl,
+  withTeamLock as withTeamLockImpl,
+  withTaskClaimLock as withTaskClaimLockImpl,
+  withMailboxLock as withMailboxLockImpl,
+} from './state/locks.js';
+import {
   TEAM_NAME_SAFE_PATTERN,
   WORKER_NAME_SAFE_PATTERN,
   TASK_ID_SAFE_PATTERN,
   TEAM_TASK_STATUSES,
   canTransitionTeamTaskStatus,
   isTerminalTeamTaskStatus,
+  type TeamTaskStatus,
 } from './contracts.js';
 
 export interface TeamConfig {
@@ -330,8 +337,6 @@ const DEFAULT_DISPATCH_ACK_TIMEOUT_MS = 800;
 const MIN_DISPATCH_ACK_TIMEOUT_MS = 100;
 const MAX_DISPATCH_ACK_TIMEOUT_MS = 10_000;
 
-type TeamTaskStatus = TeamTask['status'];
-
 function isTerminalTaskStatus(status: TeamTaskStatus): boolean {
   return isTerminalTeamTaskStatus(status);
 }
@@ -362,10 +367,6 @@ function validateTaskId(taskId: string): void {
       `Invalid task ID: "${taskId}". Must be a positive integer (digits only, max 20 digits).`
     );
   }
-}
-
-async function writeTaskClaimLockOwnerToken(ownerPath: string, ownerToken: string): Promise<void> {
-  await writeFile(ownerPath, ownerToken, 'utf8');
 }
 
 function defaultLeader(): TeamLeader {
@@ -1069,54 +1070,7 @@ export async function withScalingLock<T>(
   cwd: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const lockDir = join(teamDir(teamName, cwd), '.lock.scaling');
-  const ownerPath = join(lockDir, 'owner');
-  const ownerToken = `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
-  const deadline = Date.now() + 10_000;
-  // Ensure parent directory exists before entering spin loop
-  await mkdir(dirname(lockDir), { recursive: true });
-  while (true) {
-    try {
-      await mkdir(lockDir);
-      try {
-        await writeFile(ownerPath, ownerToken, 'utf8');
-      } catch (error) {
-        await rm(lockDir, { recursive: true, force: true });
-        throw error;
-      }
-      break;
-    } catch (error) {
-      const err = error as NodeJS.ErrnoException;
-      if (err.code !== 'EEXIST') throw error;
-      try {
-        const info = await stat(lockDir);
-        const ageMs = Date.now() - info.mtimeMs;
-        if (ageMs > LOCK_STALE_MS) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        // best effort
-      }
-      if (Date.now() > deadline) {
-        throw new Error(`Timed out acquiring scaling lock for team ${teamName}`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-  }
-
-  try {
-    return await fn();
-  } finally {
-    try {
-      const currentOwner = await readFile(ownerPath, 'utf8');
-      if (currentOwner.trim() === ownerToken) {
-        await rm(lockDir, { recursive: true, force: true });
-      }
-    } catch {
-      // best effort
-    }
-  }
+  return await withScalingLockImpl(teamName, cwd, LOCK_STALE_MS, { teamDir, taskClaimLockDir, mailboxLockDir }, fn);
 }
 
 // Write prompt to worker's inbox.md (atomic)
@@ -1138,53 +1092,7 @@ function taskFilePath(teamName: string, taskId: string, cwd: string): string {
 }
 
 async function withTeamLock<T>(teamName: string, cwd: string, fn: () => Promise<T>): Promise<T> {
-  const lockDir = join(teamDir(teamName, cwd), '.lock.create-task');
-  const ownerPath = join(lockDir, 'owner');
-  const ownerToken = `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
-  const deadline = Date.now() + 5000;
-  while (true) {
-    try {
-      await mkdir(lockDir);
-      try {
-        await writeFile(ownerPath, ownerToken, 'utf8');
-      } catch (error) {
-        await rm(lockDir, { recursive: true, force: true });
-        throw error;
-      }
-      break;
-    } catch (error) {
-      const err = error as NodeJS.ErrnoException;
-      if (err.code !== 'EEXIST') throw error;
-      // Best-effort stale lock recovery for crashed processes.
-      try {
-        const info = await stat(lockDir);
-        const ageMs = Date.now() - info.mtimeMs;
-        if (ageMs > LOCK_STALE_MS) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        // best effort
-      }
-      if (Date.now() > deadline) {
-        throw new Error(`Timed out acquiring team task lock for ${teamName}`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-  }
-
-  try {
-    return await fn();
-  } finally {
-    try {
-      const currentOwner = await readFile(ownerPath, 'utf8');
-      if (currentOwner.trim() === ownerToken) {
-        await rm(lockDir, { recursive: true, force: true });
-      }
-    } catch {
-      // best effort
-    }
-  }
+  return await withTeamLockImpl(teamName, cwd, LOCK_STALE_MS, { teamDir, taskClaimLockDir, mailboxLockDir }, fn);
 }
 
 async function withTaskClaimLock<T>(
@@ -1193,52 +1101,7 @@ async function withTaskClaimLock<T>(
   cwd: string,
   fn: () => Promise<T>
 ): Promise<{ ok: true; value: T } | { ok: false }> {
-  const lockDir = taskClaimLockDir(teamName, taskId, cwd);
-  const ownerPath = join(lockDir, 'owner');
-  const ownerToken = `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
-  const staleLockMs = LOCK_STALE_MS;
-  const deadline = Date.now() + 5000;
-  while (true) {
-    try {
-      await mkdir(lockDir);
-      break;
-    } catch (error) {
-      const err = error as NodeJS.ErrnoException;
-      if (err.code !== 'EEXIST') throw error;
-      // Best-effort stale lock recovery for abandoned claim locks.
-      try {
-        const info = await stat(lockDir);
-        const ageMs = Date.now() - info.mtimeMs;
-        if (ageMs > staleLockMs) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        // If stat/remove fails, fall through to conflict.
-      }
-      if (Date.now() > deadline) return { ok: false };
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-  }
-
-  try {
-    try {
-      await writeTaskClaimLockOwnerToken(ownerPath, ownerToken);
-    } catch (error) {
-      await rm(lockDir, { recursive: true, force: true });
-      throw error;
-    }
-    return { ok: true, value: await fn() };
-  } finally {
-    try {
-      const currentOwner = await readFile(ownerPath, 'utf8');
-      if (currentOwner.trim() === ownerToken) {
-        await rm(lockDir, { recursive: true, force: true });
-      }
-    } catch {
-      // best effort
-    }
-  }
+  return await withTaskClaimLockImpl(teamName, taskId, cwd, LOCK_STALE_MS, { teamDir, taskClaimLockDir, mailboxLockDir }, fn);
 }
 
 async function withMailboxLock<T>(
@@ -1247,57 +1110,7 @@ async function withMailboxLock<T>(
   cwd: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const root = teamDir(teamName, cwd);
-  if (!existsSync(root)) {
-    throw new Error(`Team ${teamName} not found`);
-  }
-  const lockDir = mailboxLockDir(teamName, workerName, cwd);
-  const ownerPath = join(lockDir, 'owner');
-  const ownerToken = `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
-  const deadline = Date.now() + 5000;
-  await mkdir(dirname(lockDir), { recursive: true });
-  while (true) {
-    try {
-      await mkdir(lockDir, { recursive: false });
-      try {
-        await writeFile(ownerPath, ownerToken, 'utf8');
-      } catch (error) {
-        await rm(lockDir, { recursive: true, force: true });
-        throw error;
-      }
-      break;
-    } catch (error) {
-      const err = error as NodeJS.ErrnoException;
-      if (err.code !== 'EEXIST') throw error;
-      try {
-        const info = await stat(lockDir);
-        const ageMs = Date.now() - info.mtimeMs;
-        if (ageMs > LOCK_STALE_MS) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        // best effort
-      }
-      if (Date.now() > deadline) {
-        throw new Error(`Timed out acquiring mailbox lock for ${teamName}/${workerName}`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-  }
-
-  try {
-    return await fn();
-  } finally {
-    try {
-      const currentOwner = await readFile(ownerPath, 'utf8');
-      if (currentOwner.trim() === ownerToken) {
-        await rm(lockDir, { recursive: true, force: true });
-      }
-    } catch {
-      // best effort
-    }
-  }
+  return await withMailboxLockImpl(teamName, workerName, cwd, LOCK_STALE_MS, { teamDir, taskClaimLockDir, mailboxLockDir }, fn);
 }
 
 // Create a task (auto-increment ID)

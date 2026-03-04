@@ -3,6 +3,7 @@ import { appendFile, mkdir, readFile, unlink, writeFile } from 'fs/promises';
 import { createHash } from 'crypto';
 import { dirname, join } from 'path';
 import { spawnSync } from 'child_process';
+import { sleepSync } from '../../utils/sleep.js';
 import type {
   HookEventEnvelope,
   HookPluginSdk,
@@ -89,7 +90,7 @@ function hashDedupeKey(target: string, text: string): string {
 
 function sleepFractionalSeconds(seconds: number): void {
   if (!Number.isFinite(seconds) || seconds <= 0) return;
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.round(seconds * 1000));
+  sleepSync(Math.round(seconds * 1000));
 }
 
 function runTmux(args: string[]): { ok: true; stdout: string } | { ok: false; stderr: string } {

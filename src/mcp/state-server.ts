@@ -24,7 +24,6 @@ import {
   validateSessionId,
 } from './state-paths.js';
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
-import { ensureTmuxHookInitialized } from '../cli/tmux-hook.js';
 import { RALPH_PHASES, validateAndNormalizeRalphState } from '../ralph/contract.js';
 import { ensureCanonicalRalphArtifacts } from '../ralph/persistence.js';
 import { shouldAutoStartMcpServer } from './bootstrap.js';
@@ -777,6 +776,7 @@ export async function handleStateToolCall(request: {
     if (effectiveSessionId) {
       await mkdir(getStateDir(cwd, effectiveSessionId), { recursive: true });
     }
+    const { ensureTmuxHookInitialized } = await import('../cli/tmux-hook.js');
     await ensureTmuxHookInitialized(cwd);
   }
 

@@ -2,6 +2,7 @@ import type { TeamTask } from './state.js';
 import { mkdir, readFile, rm, stat, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
 import { getFixLoopInstructions, getVerificationInstructions } from '../verification/verifier.js';
+import { sleep } from '../utils/sleep.js';
 
 const TEAM_OVERLAY_START = '<!-- OMX:TEAM:WORKER:START -->';
 const TEAM_OVERLAY_END = '<!-- OMX:TEAM:WORKER:END -->';
@@ -236,10 +237,6 @@ async function withAgentsMdLock<T>(agentsMdPath: string, fn: () => Promise<T>): 
   } finally {
     await releaseAgentsMdLock(agentsMdPath);
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**

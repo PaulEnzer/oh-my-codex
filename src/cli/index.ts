@@ -17,6 +17,16 @@ import { hudCommand } from '../hud/index.js';
 import { teamCommand } from './team.js';
 import { ralphCommand } from './ralph.js';
 import {
+  MADMAX_FLAG,
+  CODEX_BYPASS_FLAG,
+  HIGH_REASONING_FLAG,
+  XHIGH_REASONING_FLAG,
+  SPARK_FLAG,
+  MADMAX_SPARK_FLAG,
+  CONFIG_FLAG,
+  LONG_CONFIG_FLAG,
+} from './constants.js';
+import {
   getBaseStateDir,
   getStateDir,
   listModeStateFilesWithScopePreference,
@@ -105,14 +115,6 @@ Options:
                 user | project
 `;
 
-const MADMAX_FLAG = '--madmax';
-const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
-const HIGH_REASONING_FLAG = '--high';
-const XHIGH_REASONING_FLAG = '--xhigh';
-const SPARK_FLAG = '--spark';
-const MADMAX_SPARK_FLAG = '--madmax-spark';
-const CONFIG_FLAG = '-c';
-const LONG_CONFIG_FLAG = '--config';
 const REASONING_KEY = 'model_reasoning_effort';
 const MODEL_INSTRUCTIONS_FILE_KEY = 'model_instructions_file';
 const TEAM_WORKER_LAUNCH_ARGS_ENV = 'OMX_TEAM_WORKER_LAUNCH_ARGS';

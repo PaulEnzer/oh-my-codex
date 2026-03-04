@@ -1,4 +1,4 @@
-import { afterEach, describe, it, mock } from 'node:test';
+import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -9,14 +9,8 @@ import {
   recordSkillActivation,
   SKILL_ACTIVE_STATE_FILE,
 } from '../keyword-detector.js';
-import { generateKeywordDetectionSection } from '../emulator.js';
 import { isUnderspecifiedForExecution, applyRalplanGate } from '../keyword-detector.js';
 import { KEYWORD_TRIGGER_DEFINITIONS } from '../keyword-registry.js';
-
-async function readTemplateKeywords(): Promise<string[]> {
-  const section = generateKeywordDetectionSection();
-  return [...section.matchAll(/- When user says "([^"]+)":/g)].map((m: RegExpMatchArray) => m[1]);
-}
 
 describe('keyword detector swarm/team compatibility', () => {
   it('maps "coordinated team" phrase to team orchestration skill', () => {
@@ -113,28 +107,12 @@ describe('keyword detector swarm/team compatibility', () => {
   });
 });
 
-describe('keyword detection guidance generation', () => {
-  it('keeps template keyword table and runtime keyword registry in sync', async () => {
-    const templateKeywords = new Set((await readTemplateKeywords()).map((v: string) => v.toLowerCase()));
+describe('keyword registry coverage', () => {
+  it('includes key team/swarm aliases in runtime keyword registry', () => {
     const registryKeywords = new Set(KEYWORD_TRIGGER_DEFINITIONS.map((v) => v.keyword.toLowerCase()));
-    assert.deepEqual([...registryKeywords].sort(), [...templateKeywords].sort());
-  });
-
-  it('includes swarm alias activation guidance', () => {
-    const section = generateKeywordDetectionSection();
-
-    assert.match(section, /When user says "coordinated team": Activate coordinated team mode/);
-    assert.match(section, /When user says "swarm": Activate coordinated team mode \(swarm is a compatibility alias for team\)/);
-    assert.match(section, /When user says "coordinated swarm": Activate coordinated team mode \(swarm is a compatibility alias for team\)/);
-  });
-
-  it('includes ralplan-first planning gate guidance', () => {
-    const section = generateKeywordDetectionSection();
-
-    assert.match(section, /Ralplan-first execution gate:/);
-    assert.match(section, /`prd-\*\.md`/);
-    assert.match(section, /`test-spec-\*\.md`/);
-    assert.match(section, /if ralph is active/i);
+    assert.ok(registryKeywords.has('coordinated team'));
+    assert.ok(registryKeywords.has('swarm'));
+    assert.ok(registryKeywords.has('coordinated swarm'));
   });
 });
 

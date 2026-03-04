@@ -2,6 +2,14 @@ import { spawnSync, execFile } from 'child_process';
 import { promisify } from 'util';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import {
+  CODEX_BYPASS_FLAG,
+  MADMAX_FLAG,
+  CONFIG_FLAG,
+  LONG_CONFIG_FLAG,
+  MODEL_FLAG,
+} from '../cli/constants.js';
+import { sleep, sleepSync } from '../utils/sleep.js';
 
 const execFileAsync = promisify(execFile);
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../hud/constants.js';
@@ -22,11 +30,6 @@ export interface TeamSession {
 }
 
 const INJECTION_MARKER = '[OMX_TMUX_INJECT]';
-const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
-const MADMAX_FLAG = '--madmax';
-const CONFIG_FLAG = '-c';
-const LONG_CONFIG_FLAG = '--config';
-const MODEL_FLAG = '--model';
 const MODEL_INSTRUCTIONS_FILE_KEY = 'model_instructions_file';
 const OMX_BYPASS_DEFAULT_SYSTEM_PROMPT_ENV = 'OMX_BYPASS_DEFAULT_SYSTEM_PROMPT';
 const OMX_MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
@@ -158,10 +161,6 @@ function findHudPaneIds(target: string, leaderPaneId: string): string[] {
     .map((pane) => pane.paneId);
 }
 
-function sleepMs(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
 const MAX_FRACTIONAL_SLEEP_MS = 60_000;
 
 function toFractionalSleepMs(seconds: number): number {
@@ -177,7 +176,7 @@ function sleepSeconds(seconds: number): void {
 
 export function sleepFractionalSeconds(
   seconds: number,
-  sleepImpl: (ms: number) => void = sleepMs,
+  sleepImpl: (ms: number) => void = sleepSync,
 ): void {
   const ms = toFractionalSleepMs(seconds);
   if (ms <= 0) return;
@@ -185,8 +184,6 @@ export function sleepFractionalSeconds(
 }
 
 // ── Async tmux helpers ──────────────────────────────────────────────────────
-
-const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 async function runTmuxAsync(args: string[]): Promise<{ok: true; stdout: string} | {ok: false; stderr: string}> {
   try {

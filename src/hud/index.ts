@@ -14,35 +14,9 @@ import { readAllState, readHudConfig } from './state.js';
 import { renderHud } from './render.js';
 import type { HudFlags, HudPreset, HudRenderContext } from './types.js';
 import { HUD_TMUX_HEIGHT_LINES } from './constants.js';
+import { sleep } from '../utils/sleep.js';
 
 type SleepFn = (ms: number, signal?: AbortSignal) => Promise<void>;
-
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  if (ms <= 0) return Promise.resolve();
-  if (!signal) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  return new Promise((resolve) => {
-    if (signal.aborted) {
-      resolve();
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-
-    const onAbort = () => {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    };
-
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-}
 
 export async function watchRenderLoop(
   render: () => Promise<void>,
@@ -67,7 +41,7 @@ export async function watchRenderLoop(
 
     if (signal?.aborted) return;
     const elapsedMs = Date.now() - startedAt;
-    await sleepFn(Math.max(0, intervalMs - elapsedMs), signal);
+    await sleepFn(Math.max(0, intervalMs - elapsedMs), signal).catch(() => {});
   }
 }
 

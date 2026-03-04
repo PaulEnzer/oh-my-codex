@@ -7,6 +7,7 @@
 
 export type TeamPhase = 'team-plan' | 'team-prd' | 'team-exec' | 'team-verify' | 'team-fix';
 export type TerminalPhase = 'complete' | 'failed' | 'cancelled';
+import type { TeamTask } from './state.js';
 const TERMINAL_PHASES: readonly TerminalPhase[] = ['complete', 'failed', 'cancelled'];
 const FIX_LOOP_EXCEEDED_REASON = 'team-fix loop limit reached';
 
@@ -19,17 +20,6 @@ export interface TeamState {
   tasks: TeamTask[];
   max_fix_attempts: number;
   current_fix_attempt: number;
-}
-
-export interface TeamTask {
-  id: string;
-  subject: string;
-  description: string;
-  status: 'pending' | 'in_progress' | 'completed' | 'blocked';
-  owner?: string;
-  blockedBy?: string[];
-  createdAt: string;
-  completedAt?: string;
 }
 
 /**
