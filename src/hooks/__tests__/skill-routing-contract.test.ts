@@ -19,9 +19,12 @@ describe('skill routing contracts', () => {
     assert.match(skill, /router/i);
   });
 
-  it('keeps code-review separate from dedicated security review', async () => {
+  it('keeps code-review as the primary public review entry while preserving dedicated security escalation', async () => {
     const skill = await readSkill('skills/code-review/SKILL.md');
 
+    assert.match(skill, /primary public review entry/i);
+    assert.match(skill, /default public choice/i);
+    assert.match(skill, /baseline security screen/i);
     assert.match(skill, /dedicated security audit/i);
     assert.match(skill, /use `security-review`/i);
   });
@@ -40,6 +43,7 @@ describe('skill routing contracts', () => {
     const skill = await readSkill('skills/security-review/SKILL.md');
 
     assert.match(skill, /specialist compatibility/i);
+    assert.match(skill, /public compatibility lane/i);
     assert.match(skill, /not.*primary public review entry/i);
     assert.match(skill, /stays distinct from `code-review`/i);
     assert.match(skill, /Do \*\*not\*\* use it for generic maintainability, style, or API ergonomics feedback/i);

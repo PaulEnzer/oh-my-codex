@@ -23,6 +23,11 @@ This skill activates when:
 
 It is **not** the primary public review entry; use it when the user explicitly requests a security audit or when `code-review` escalates due to trust-boundary risk.
 
+For 1.0-beta positioning, treat `security-review` as a **public compatibility lane**:
+- still available for explicit security-audit requests
+- still available as the specialist escalation target behind `code-review`
+- not a headline public review entry when teaching the default public surface
+
 Use this skill for:
 - trust-boundary analysis
 - authentication / authorization review

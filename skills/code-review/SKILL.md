@@ -19,12 +19,15 @@ This skill activates when:
 
 `code-review` is the primary public review entry for general code quality in this consolidation.
 
+It should be the **default public choice** for new review requests, including changes that may need a light security pass before deciding whether a dedicated security audit is warranted.
+
 It **does cover**:
 - correctness and bug risk
 - maintainability and code health
 - API contracts and integration boundaries
 - performance concerns
 - style / consistency issues
+- a baseline security screen to decide whether deeper trust-boundary review is needed
 
 It **does not replace** a dedicated security audit. For trust boundaries, auth/authz, OWASP-style vulnerability review, secrets scanning, or dependency CVE review, escalate to `security-review` as the specialist compatibility lane.
 
@@ -76,6 +79,7 @@ Review Checklist:
 
 Important boundary:
 - Do not perform a full OWASP/security audit here.
+- Do perform a baseline security screen to decide whether a deeper specialist audit is needed.
 - If trust-boundary or auth/input-risk concerns are discovered, recommend `security-review` explicitly.
 
 Output: Code review report with:
