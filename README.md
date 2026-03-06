@@ -102,9 +102,9 @@ omx --xhigh --madmax
 Inside Codex:
 
 ```text
-/prompts:architect "analyze current auth boundaries"
+$analyze "analyze current auth boundaries"
 /prompts:executor "implement input validation in login"
-$plan "ship OAuth callback safely"
+/prompts:critic "challenge the OAuth rollout plan"
 $team 3:executor "fix all TypeScript errors"
 ```
 

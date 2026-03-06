@@ -85,4 +85,19 @@ describe('catalog public-surface contract', () => {
     assert.match(agentsDoc, /\/prompts:security-reviewer <strong>\(internal expert\)<\/strong>/i);
     assert.match(agentsDoc, /first-class public critique agent/i);
   });
+
+  it('keeps stale expert-first examples out of primary README and AGENTS surfaces', async () => {
+    const readme = await readRepoFile('README.md');
+    const agents = await readRepoFile('AGENTS.md');
+    const templateAgents = await readRepoFile('templates/AGENTS.md');
+
+    assert.match(readme, /\$analyze\s+"analyze current auth boundaries"/i);
+    assert.match(readme, /\/prompts:critic\s+"challenge the OAuth rollout plan"/i);
+    assert.doesNotMatch(readme, /\/prompts:architect\s+"analyze current auth boundaries"/i);
+
+    assert.match(agents, /\/prompts:critic\s+"challenge this plan"/i);
+    assert.match(templateAgents, /\/prompts:critic\s+"challenge this plan"/i);
+    assert.doesNotMatch(agents, /\/prompts:architect\s+"review auth/iu);
+    assert.doesNotMatch(templateAgents, /\/prompts:architect\s+"review auth/iu);
+  });
 });

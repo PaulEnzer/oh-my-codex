@@ -75,7 +75,7 @@ Key constraints:
 
 <invocation_conventions>
 Codex CLI uses these prefixes for custom commands:
-- `/prompts:name` — invoke a custom prompt (e.g., `/prompts:architect "review auth module"`)
+- `/prompts:name` — invoke a custom prompt (e.g., `/prompts:critic "challenge this plan"`)
 - `$name` — invoke a skill (e.g., `$ralph "fix all tests"`, `$autopilot "build REST API"`)
 - `/skills` — browse available skills interactively
 
@@ -89,7 +89,7 @@ Match agent role to task complexity:
 - **Standard** (implementation, debugging, focused verification): `executor`, `debugger`, `test-engineer`
 - **High complexity** (architecture, umbrella review, security review, deep critique): `architect`, `code-reviewer`, `security-reviewer`, `critic`, `executor`
 
-For interactive use: `/prompts:name` (e.g., `/prompts:architect "review auth"`)
+For interactive use: `/prompts:name` (e.g., `/prompts:critic "challenge this plan"`)
 For child agent delegation: follow `<child_agent_protocol>` — read prompt file, pass it in `spawn_agent.message`
 For workflow skills: `$name` (e.g., `$ralph "fix all tests"`)
 </model_routing>
