@@ -18,10 +18,14 @@ describe('catalog public-surface contract', () => {
     const review = manifest.skills.find((entry) => entry.name === 'review');
 
     assert.equal(analyze?.status, 'active');
+    assert.equal(analyze?.surface, 'public_task_intent');
     assert.equal(codeReview?.status, 'active');
+    assert.equal(codeReview?.surface, 'public_task_intent');
     assert.equal(securityReview?.status, 'deprecated');
+    assert.equal(securityReview?.surface, 'compatibility_alias');
     assert.equal(securityReview?.canonical, 'code-review');
     assert.equal(review?.status, 'deprecated');
+    assert.equal(review?.surface, 'compatibility_alias');
     assert.equal(review?.canonical, 'plan --review');
 
     const architect = manifest.agents.find((entry) => entry.name === 'architect');
@@ -31,10 +35,24 @@ describe('catalog public-surface contract', () => {
     const critic = manifest.agents.find((entry) => entry.name === 'critic');
 
     assert.equal(architect?.status, 'internal');
+    assert.equal(architect?.surface, 'internal_expert');
     assert.equal(debuggerPrompt?.status, 'internal');
+    assert.equal(debuggerPrompt?.surface, 'internal_expert');
     assert.equal(codeReviewer?.status, 'internal');
+    assert.equal(codeReviewer?.surface, 'internal_expert');
     assert.equal(securityReviewer?.status, 'internal');
+    assert.equal(securityReviewer?.surface, 'internal_expert');
     assert.equal(critic?.status, 'active');
+    assert.equal(critic?.surface, 'public_agent');
+  });
+
+  it('rejects invalid surface metadata in the manifest schema', async () => {
+    const schema = await import('../schema.js');
+    const manifest = readCatalogManifest();
+    const broken = JSON.parse(JSON.stringify(manifest));
+    const analyze = broken.skills.find((entry: { name: string }) => entry.name === 'analyze');
+    analyze.surface = 'totally_invalid';
+    assert.throws(() => schema.validateCatalogManifest(broken), /skills\[\d+\]\.surface/);
   });
 
   it('documents the three-entry public review/analysis surface in docs/skills.html', async () => {

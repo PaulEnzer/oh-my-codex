@@ -64,7 +64,8 @@
     {
       "name": "analyze",
       "category": "shortcut",
-      "status": "active"
+      "status": "active",
+      "surface": "public_task_intent"
     },
     {
       "name": "deepsearch",
@@ -88,13 +89,15 @@
       "name": "code-review",
       "category": "shortcut",
       "status": "active",
-      "canonical": "code-reviewer"
+      "canonical": "code-reviewer",
+      "surface": "public_task_intent"
     },
     {
       "name": "security-review",
       "category": "shortcut",
       "status": "deprecated",
-      "canonical": "code-review"
+      "canonical": "code-review",
+      "surface": "compatibility_alias"
     },
     {
       "name": "visual-verdict",
@@ -124,7 +127,8 @@
       "name": "review",
       "category": "shortcut",
       "status": "deprecated",
-      "canonical": "plan --review"
+      "canonical": "plan --review",
+      "surface": "compatibility_alias"
     },
     {
       "name": "ask-claude",
@@ -247,12 +251,14 @@
     {
       "name": "architect",
       "category": "build",
-      "status": "internal"
+      "status": "internal",
+      "surface": "internal_expert"
     },
     {
       "name": "debugger",
       "category": "build",
-      "status": "internal"
+      "status": "internal",
+      "surface": "internal_expert"
     },
     {
       "name": "executor",
@@ -268,35 +274,41 @@
       "name": "style-reviewer",
       "category": "review",
       "status": "merged",
-      "canonical": "code-reviewer"
+      "canonical": "code-reviewer",
+      "surface": "compatibility_alias"
     },
     {
       "name": "quality-reviewer",
       "category": "review",
       "status": "merged",
-      "canonical": "code-reviewer"
+      "canonical": "code-reviewer",
+      "surface": "compatibility_alias"
     },
     {
       "name": "api-reviewer",
       "category": "review",
       "status": "merged",
-      "canonical": "code-reviewer"
+      "canonical": "code-reviewer",
+      "surface": "compatibility_alias"
     },
     {
       "name": "security-reviewer",
       "category": "review",
-      "status": "internal"
+      "status": "internal",
+      "surface": "internal_expert"
     },
     {
       "name": "performance-reviewer",
       "category": "review",
       "status": "merged",
-      "canonical": "code-reviewer"
+      "canonical": "code-reviewer",
+      "surface": "compatibility_alias"
     },
     {
       "name": "code-reviewer",
       "category": "review",
-      "status": "internal"
+      "status": "internal",
+      "surface": "internal_expert"
     },
     {
       "name": "dependency-expert",
@@ -377,7 +389,8 @@
     {
       "name": "critic",
       "category": "coordination",
-      "status": "active"
+      "status": "active",
+      "surface": "public_agent"
     },
     {
       "name": "vision",

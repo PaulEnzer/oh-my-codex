@@ -1,11 +1,13 @@
 export type CatalogSkillCategory = 'execution' | 'planning' | 'shortcut' | 'utility';
 export type CatalogAgentCategory = 'build' | 'review' | 'domain' | 'product' | 'coordination';
 export type CatalogEntryStatus = 'active' | 'alias' | 'merged' | 'deprecated' | 'internal';
+export type CatalogSurface = 'public_task_intent' | 'public_agent' | 'internal_expert' | 'compatibility_alias';
 
 export interface CatalogSkillEntry {
   name: string;
   category: CatalogSkillCategory;
   status: CatalogEntryStatus;
+  surface?: CatalogSurface;
   canonical?: string;
   core?: boolean;
   internalRequired?: boolean;
@@ -15,6 +17,7 @@ export interface CatalogAgentEntry {
   name: string;
   category: CatalogAgentCategory;
   status: CatalogEntryStatus;
+  surface?: CatalogSurface;
   canonical?: string;
 }
 
@@ -28,6 +31,7 @@ export interface CatalogManifest {
 const SKILL_CATEGORIES = new Set<CatalogSkillCategory>(['execution', 'planning', 'shortcut', 'utility']);
 const AGENT_CATEGORIES = new Set<CatalogAgentCategory>(['build', 'review', 'domain', 'product', 'coordination']);
 const ENTRY_STATUSES = new Set<CatalogEntryStatus>(['active', 'alias', 'merged', 'deprecated', 'internal']);
+const ENTRY_SURFACES = new Set<CatalogSurface>(['public_task_intent', 'public_agent', 'internal_expert', 'compatibility_alias']);
 const REQUIRED_CORE_SKILLS = new Set(['ralplan', 'team', 'ralph', 'ultrawork', 'autopilot']);
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -65,6 +69,9 @@ export function validateCatalogManifest(input: unknown): CatalogManifest {
     if (!ENTRY_STATUSES.has(entry.status as CatalogEntryStatus)) {
       throw new Error(`catalog_manifest_invalid:skills[${index}].status`);
     }
+    if (entry.surface !== undefined && !ENTRY_SURFACES.has(entry.surface as CatalogSurface)) {
+      throw new Error(`catalog_manifest_invalid:skills[${index}].surface`);
+    }
 
     const name = entry.name.trim();
     if (seenSkills.has(name)) throw new Error(`catalog_manifest_invalid:duplicate_skill:${name}`);
@@ -82,6 +89,7 @@ export function validateCatalogManifest(input: unknown): CatalogManifest {
       name,
       category: entry.category as CatalogSkillCategory,
       status: entry.status as CatalogEntryStatus,
+      surface: entry.surface as CatalogSurface | undefined,
       canonical,
       core: entry.core === true,
       internalRequired: entry.internalRequired === true,
@@ -101,6 +109,9 @@ export function validateCatalogManifest(input: unknown): CatalogManifest {
     if (!ENTRY_STATUSES.has(entry.status as CatalogEntryStatus)) {
       throw new Error(`catalog_manifest_invalid:agents[${index}].status`);
     }
+    if (entry.surface !== undefined && !ENTRY_SURFACES.has(entry.surface as CatalogSurface)) {
+      throw new Error(`catalog_manifest_invalid:agents[${index}].surface`);
+    }
 
     const name = entry.name.trim();
     if (seenAgents.has(name)) throw new Error(`catalog_manifest_invalid:duplicate_agent:${name}`);
@@ -118,6 +129,7 @@ export function validateCatalogManifest(input: unknown): CatalogManifest {
       name,
       category: entry.category as CatalogAgentCategory,
       status: entry.status as CatalogEntryStatus,
+      surface: entry.surface as CatalogSurface | undefined,
       canonical,
     };
   });
