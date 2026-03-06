@@ -30,6 +30,7 @@ import {
   sendEnterpriseMailboxMessage,
 } from '../enterprise/state.js';
 import {
+  nudgeEnterpriseLiveNode,
   readEnterpriseLiveRuntime,
   refreshEnterpriseLiveMonitor,
   shutdownEnterpriseLiveNode,
@@ -45,6 +46,7 @@ Usage: omx enterprise [options] "<task description>"
        omx enterprise live-start
        omx enterprise shutdown
        omx enterprise shutdown-node <node-id>
+       omx enterprise nudge <node-id> "<message>"
        omx enterprise refresh-monitor
        omx enterprise assign <lead-id> "<subject>:<scope>"
        omx enterprise escalate <node-id> "<summary>" [--details "..."]
@@ -70,6 +72,7 @@ Examples:
   omx enterprise live-start
   omx enterprise assign division-1 "Verifier:verify runtime shell"
   omx enterprise shutdown-node subordinate-1
+  omx enterprise nudge subordinate-1 "continue and summarize blockers"
   omx enterprise message subordinate-1 division-1 "verification complete"
   omx enterprise mailbox chairman-1
   omx enterprise escalate subordinate-1 "needs chairman attention" --details "blocked on shared file ownership"
@@ -338,6 +341,16 @@ export async function enterpriseCommand(args: string[]): Promise<void> {
 
   if (subcommand === 'inspect') {
     await renderInspect((args[1] || '').toLowerCase(), args[2]);
+    return;
+  }
+
+
+  if (subcommand === 'nudge') {
+    const nodeId = args[1];
+    const message = args[2];
+    if (!nodeId || !message) throw new Error('Usage: omx enterprise nudge <node-id> "<message>"');
+    await nudgeEnterpriseLiveNode(nodeId, message);
+    console.log(`Enterprise node nudged: ${nodeId}`);
     return;
   }
 

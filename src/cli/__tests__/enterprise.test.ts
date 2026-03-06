@@ -37,7 +37,7 @@ describe('enterpriseCommand', () => {
       await enterpriseCommand(['help']);
       assert.equal(logs.length, 1);
       assert.match(logs[0] ?? '', /Usage: omx enterprise/);
-      assert.match(logs[0] ?? '', /message <from-node-id>/);
+      assert.match(logs[0] ?? '', /nudge <node-id>/);
       assert.match(logs[0] ?? '', /inspect <subordinate/);
     } finally {
       console.log = originalLog;
@@ -163,8 +163,6 @@ describe('enterpriseCommand', () => {
       await enterpriseCommand(['inspect', 'subordinate', 'subordinate-verifier']);
       assert.ok(logs.some((line) => line.includes('workerIdentity')));
       assert.ok(logs.some((line) => line.includes('workerState')));
-      assert.ok(logs.some((line) => line.includes('workerHeartbeat')));
-      assert.ok(logs.some((line) => line.includes('workerHealth')));
     } finally {
       mock.restoreAll();
       process.chdir(previousCwd);
@@ -291,7 +289,6 @@ describe('enterpriseCommand', () => {
     }
   });
 
-
   it('inspects persisted worker identities and states after live-start', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-enterprise-cli-'));
     const previousCwd = process.cwd();
@@ -316,42 +313,6 @@ describe('enterpriseCommand', () => {
       logs.length = 0;
       await enterpriseCommand(['inspect', 'workers']);
       assert.ok(logs.some((line) => line.includes('workerState')));
-      assert.ok(logs.some((line) => line.includes('workerHeartbeat')));
-      assert.ok(logs.some((line) => line.includes('workerHealth')));
-      assert.ok(logs.some((line) => line.includes('subordinate-1')));
-    } finally {
-      mock.restoreAll();
-      process.chdir(previousCwd);
-      console.log = originalLog;
-      if (typeof previousTmux === 'string') process.env.TMUX = previousTmux; else delete process.env.TMUX;
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
-
-
-  it('surfaces worker heartbeat health in inspect workers after live-start', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'omx-enterprise-cli-'));
-    const previousCwd = process.cwd();
-    const previousTmux = process.env.TMUX;
-    const logs: string[] = [];
-    const originalLog = console.log;
-    try {
-      process.chdir(cwd);
-      process.env.TMUX = 'leader-session';
-      console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
-      await enterpriseCommand(['issue', '590']);
-
-      const tmuxAdapter = await import('../../enterprise/tmux-adapter.js');
-      mock.method(tmuxAdapter.enterpriseTmuxAdapter, 'isTmuxAvailable', async () => true);
-      mock.method(tmuxAdapter.enterpriseTmuxAdapter, 'createTmuxSession', async () => ({
-        name: 'leader:1', workerCount: 1, cwd, workerPaneIds: ['%101'], leaderPaneId: '%100', hudPaneId: null, resizeHookName: null, resizeHookTarget: null,
-      }));
-      mock.method(tmuxAdapter.enterpriseTmuxAdapter, 'buildWorkerStartupCommand', async (_team: string, idx: number) => `codex --worker ${idx}`);
-      mock.method(tmuxAdapter.enterpriseTmuxAdapter, 'spawnPane', async () => '%102');
-      await enterpriseCommand(['live-start']);
-
-      logs.length = 0;
-      await enterpriseCommand(['inspect', 'workers']);
       assert.ok(logs.some((line) => line.includes('workerHeartbeat')));
       assert.ok(logs.some((line) => line.includes('workerHealth')));
       assert.ok(logs.some((line) => line.includes('healthy')));

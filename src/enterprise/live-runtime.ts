@@ -372,6 +372,23 @@ export async function shutdownEnterpriseLiveNode(nodeId: string, cwd: string = p
   return updatedLive;
 }
 
+
+export async function nudgeEnterpriseLiveNode(nodeId: string, message: string, cwd: string = process.cwd()): Promise<void> {
+  const projectRoot = resolve(cwd);
+  const live = await readEnterpriseLiveRuntime(projectRoot);
+  if (!live) throw new Error('Enterprise live runtime has not been started.');
+  const worker = live.workers.find((entry) => entry.nodeId === nodeId);
+  if (!worker) throw new Error(`Enterprise live worker not found: ${nodeId}`);
+  await enterpriseTmuxAdapter.sendKeys(worker.paneId, message);
+  await appendEnterpriseEvent(projectRoot, {
+    type: 'mailbox_message',
+    nodeId,
+    summary: `Enterprise live node nudged: ${nodeId}`,
+    createdAt: new Date().toISOString(),
+    payload: { paneId: worker.paneId, message },
+  });
+}
+
 export async function updateEnterpriseLiveMonitor(
   updates: Parameters<typeof applyEnterpriseExecutionUpdates>[0],
   cwd: string = process.cwd(),

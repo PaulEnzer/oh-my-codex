@@ -56,6 +56,21 @@ export const enterpriseTmuxAdapter = {
 
 
 
+
+
+  async sendKeys(paneId: string, text: string): Promise<void> {
+    const result = spawnSync('tmux', ['send-keys', '-t', paneId, '-l', '--', text], { encoding: 'utf-8' });
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+      throw new Error((result.stderr || '').trim() || `tmux exited ${result.status}`);
+    }
+    const enter = spawnSync('tmux', ['send-keys', '-t', paneId, 'C-m'], { encoding: 'utf-8' });
+    if (enter.error) throw enter.error;
+    if (enter.status !== 0) {
+      throw new Error((enter.stderr || '').trim() || `tmux exited ${enter.status}`);
+    }
+  },
+
   async killPane(paneId: string): Promise<void> {
     const result = spawnSync('tmux', ['kill-pane', '-t', paneId], { encoding: 'utf-8' });
     if (result.error) throw result.error;
