@@ -1,5 +1,5 @@
 import type { TeamPhase, TerminalPhase } from '../orchestrator.js';
-import type { TeamTaskStatus } from '../contracts.js';
+import type { TeamTaskStatus, TeamEventType } from '../contracts.js';
 
 export interface TeamConfig {
   name: string;
@@ -174,24 +174,19 @@ export interface TeamWorkspaceMetadata {
 export interface TeamEvent {
   event_id: string;
   team: string;
-  type:
-    | 'task_completed'
-    | 'task_failed'
-    | 'worker_idle'
-    | 'worker_stopped'
-    | 'message_received'
-    | 'shutdown_ack'
-    | 'shutdown_gate'
-    | 'shutdown_gate_forced'
-    | 'ralph_cleanup_policy'
-    | 'ralph_cleanup_summary'
-    | 'approval_decision'
-    | 'team_leader_nudge';
+  type: TeamEventType;
   worker: string;
   task_id?: string;
   message_id?: string | null;
   reason?: string;
+  state?: WorkerStatus['state'];
+  prev_state?: WorkerStatus['state'];
+  worker_count?: number;
+  to_worker?: string;
+  source_type?: string;
+  metadata?: Record<string, unknown>;
   created_at: string;
+  [key: string]: unknown;
 }
 
 export interface TeamMailboxMessage {

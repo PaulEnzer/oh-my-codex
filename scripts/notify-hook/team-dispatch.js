@@ -209,6 +209,8 @@ async function appendLeaderNotificationDeferredEvent({
   request,
   reason,
   nowIso,
+  tmuxSession = '',
+  leaderPaneId = '',
 }) {
   const eventsDir = join(stateDir, 'team', teamName, 'events');
   const eventsPath = join(eventsDir, 'events.ndjson');
@@ -222,6 +224,9 @@ async function appendLeaderNotificationDeferredEvent({
     created_at: nowIso,
     request_id: request.request_id,
     ...(request.message_id ? { message_id: request.message_id } : {}),
+    tmux_session: tmuxSession || null,
+    leader_pane_id: leaderPaneId || null,
+    tmux_injection_attempted: false,
   };
   await mkdir(eventsDir, { recursive: true }).catch(() => {});
   await appendFile(eventsPath, JSON.stringify(event) + '\n').catch(() => {});
@@ -433,6 +438,7 @@ async function updateMailboxNotified(stateDir, teamName, workerName, messageId) 
 
 async function appendDispatchLog(logsDir, event) {
   const path = join(logsDir, `team-dispatch-${new Date().toISOString().slice(0, 10)}.jsonl`);
+  await mkdir(logsDir, { recursive: true }).catch(() => {});
   await appendFile(path, `${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`).catch(() => {});
 }
 
@@ -486,29 +492,38 @@ export async function drainPendingTeamDispatch({
 
         if (request.to_worker === 'leader-fixed' && !safeString(config?.leader_pane_id).trim()) {
           const nowIso = new Date().toISOString();
+          const alreadyDeferred = safeString(request.last_reason).trim() === LEADER_PANE_MISSING_DEFERRED_REASON;
           request.updated_at = nowIso;
           request.last_reason = LEADER_PANE_MISSING_DEFERRED_REASON;
           request.status = 'pending';
           skipped += 1;
           mutated = true;
-          await appendDispatchLog(logsDir, {
-            type: 'dispatch_deferred',
-            team: teamName,
-            request_id: request.request_id,
-            worker: request.to_worker,
-            to_worker: request.to_worker,
-            message_id: request.message_id || null,
-            reason: LEADER_PANE_MISSING_DEFERRED_REASON,
-            status: 'pending',
-            tmux_injection_attempted: false,
-          });
-          await appendLeaderNotificationDeferredEvent({
-            stateDir,
-            teamName,
-            request,
-            reason: LEADER_PANE_MISSING_DEFERRED_REASON,
-            nowIso,
-          });
+          if (!alreadyDeferred) {
+            await appendDispatchLog(logsDir, {
+              type: 'dispatch_deferred',
+              team: teamName,
+              request_id: request.request_id,
+              worker: request.to_worker,
+              to_worker: request.to_worker,
+              message_id: request.message_id || null,
+              reason: LEADER_PANE_MISSING_DEFERRED_REASON,
+              status: 'pending',
+              tmux_session: safeString(config?.tmux_session).trim() || null,
+              leader_pane_id: safeString(config?.leader_pane_id).trim() || null,
+              tmux_injection_attempted: false,
+            });
+            // Requests JSON is the canonical queue state; this event is a progress artifact
+            // for hook/watcher readers until shared readers normalize everything later.
+            await appendLeaderNotificationDeferredEvent({
+              stateDir,
+              teamName,
+              request,
+              reason: LEADER_PANE_MISSING_DEFERRED_REASON,
+              nowIso,
+              tmuxSession: safeString(config?.tmux_session).trim(),
+              leaderPaneId: safeString(config?.leader_pane_id).trim(),
+            });
+          }
           continue;
         }
 

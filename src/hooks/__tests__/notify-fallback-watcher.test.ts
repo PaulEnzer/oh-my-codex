@@ -268,6 +268,45 @@ describe('notify-fallback watcher', () => {
     }
   });
 
+  it('records explicit leader-only dispatch drain state and log visibility in one-shot mode', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-dispatch-state-'));
+    try {
+      await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
+      await enqueueDispatchRequest('dispatch-team', {
+        kind: 'inbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        trigger_message: 'dispatch ping',
+      }, wd);
+
+      const watcherScript = new URL('../../../scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../scripts/notify-hook.js', import.meta.url).pathname;
+      const result = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--poll-ms', '50', '--dispatch-max-per-tick', '1'],
+        { encoding: 'utf-8' },
+      );
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+
+      const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
+      const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+      assert.equal(watcherState.dispatch_drain?.enabled, true);
+      assert.equal(watcherState.dispatch_drain?.leader_only, true);
+      assert.equal(watcherState.dispatch_drain?.max_per_tick, 1);
+      assert.equal(watcherState.dispatch_drain?.run_count, 1);
+      assert.equal(watcherState.dispatch_drain?.last_result?.processed, 1);
+
+      const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+      const logEntries = (await readFile(logPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const drainEvent = logEntries.find((entry: { type?: string }) => entry.type === 'dispatch_drain_tick');
+      assert.ok(drainEvent, 'expected dispatch_drain_tick log event');
+      assert.equal(drainEvent.leader_only, true);
+      assert.equal(drainEvent.processed, 1);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('runs bounded non-turn team dispatch drain tick in leader context', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-dispatch-'));
     try {
@@ -314,6 +353,19 @@ describe('notify-fallback watcher', () => {
       assert.equal(result.status, 0, result.stderr || result.stdout);
       const request = await readDispatchRequest('dispatch-team', queued.request.request_id, wd);
       assert.equal(request?.status, 'pending');
+
+      const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
+      const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+      assert.equal(watcherState.dispatch_drain?.leader_only, false);
+      assert.equal(watcherState.dispatch_drain?.last_result?.reason, 'worker_context');
+      assert.equal(watcherState.dispatch_drain?.last_result?.processed, 0);
+
+      const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+      const logEntries = (await readFile(logPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const drainEvent = logEntries.find((entry: { type?: string }) => entry.type === 'dispatch_drain_tick');
+      assert.ok(drainEvent, 'expected dispatch_drain_tick log event');
+      assert.equal(drainEvent.leader_only, false);
+      assert.equal(drainEvent.reason, 'worker_context');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

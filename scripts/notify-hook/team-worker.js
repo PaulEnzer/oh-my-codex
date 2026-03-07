@@ -227,6 +227,9 @@ async function emitLeaderPaneMissingDeferred({
     to_worker: 'leader-fixed',
     reason,
     created_at: nowIso,
+    leader_pane_id: leaderPaneId || null,
+    tmux_session: tmuxSession || null,
+    tmux_injection_attempted: false,
   };
   await appendFile(eventsPath, JSON.stringify(event) + '\n').catch(() => {});
 }
@@ -288,6 +291,14 @@ export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, 
   if (!allIdle) return;
 
   if (!leaderPaneId) {
+    const nextIdleState = {
+      ...idleState,
+      last_notified_at_ms: nowMs,
+      last_notified_at: nowIso,
+      worker_count: workers.length,
+      delivery: 'deferred',
+    };
+    await writeFile(idleStatePath, JSON.stringify(nextIdleState, null, 2)).catch(() => {});
     await emitLeaderPaneMissingDeferred({
       stateDir,
       logsDir,

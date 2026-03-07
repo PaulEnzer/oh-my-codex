@@ -1616,6 +1616,22 @@ async function emitMonitorDerivedEvents(
     }
 
     const prevState = previous.workerStateByName[worker.name];
+    if (prevState && prevState !== worker.status.state) {
+      await appendTeamEvent(
+        teamName,
+        {
+          type: 'worker_state_changed',
+          worker: worker.name,
+          task_id: worker.status.current_task_id,
+          message_id: null,
+          reason: worker.status.reason,
+          state: worker.status.state,
+          prev_state: prevState,
+        },
+        cwd
+      );
+    }
+
     if (prevState && prevState !== 'idle' && worker.status.state === 'idle') {
       await appendTeamEvent(
         teamName,
@@ -1625,6 +1641,9 @@ async function emitMonitorDerivedEvents(
           task_id: worker.status.current_task_id,
           message_id: null,
           reason: undefined,
+          prev_state: prevState,
+          state: 'idle',
+          source_type: 'worker_idle',
         },
         cwd
       );

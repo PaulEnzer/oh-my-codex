@@ -56,6 +56,7 @@ import {
   canTransitionTeamTaskStatus,
   isTerminalTeamTaskStatus,
   type TeamTaskStatus,
+  type TeamEventType,
 } from './contracts.js';
 
 export interface TeamConfig {
@@ -237,24 +238,19 @@ export interface TeamWorkspaceMetadata {
 export interface TeamEvent {
   event_id: string;
   team: string;
-  type:
-    | 'task_completed'
-    | 'task_failed'
-    | 'worker_idle'
-    | 'worker_stopped'
-    | 'message_received'
-    | 'shutdown_ack'
-    | 'shutdown_gate'
-    | 'shutdown_gate_forced'
-    | 'ralph_cleanup_policy'
-    | 'ralph_cleanup_summary'
-    | 'approval_decision'
-    | 'team_leader_nudge';
+  type: TeamEventType;
   worker: string;
   task_id?: string;
   message_id?: string | null;
   reason?: string;
+  state?: WorkerStatus['state'];
+  prev_state?: WorkerStatus['state'];
+  worker_count?: number;
+  to_worker?: string;
+  source_type?: string;
+  metadata?: Record<string, unknown>;
   created_at: string;
+  [key: string]: unknown;
 }
 
 export interface TeamMailboxMessage {
@@ -542,7 +538,7 @@ function taskClaimLockDir(teamName: string, taskId: string, cwd: string): string
   return p;
 }
 
-function eventLogPath(teamName: string, cwd: string): string {
+export function teamEventLogPath(teamName: string, cwd: string): string {
   return join(teamDir(teamName, cwd), 'events', 'events.ndjson');
 }
 
@@ -1275,13 +1271,13 @@ export async function releaseTaskClaim(
 }
 
 export async function appendTeamEvent(teamName: string, event: Omit<TeamEvent, 'event_id' | 'created_at' | 'team'>, cwd: string): Promise<TeamEvent> {
-  const full: TeamEvent = {
+  const full = {
+    ...event,
     event_id: randomUUID(),
     team: teamName,
     created_at: new Date().toISOString(),
-    ...event,
-  };
-  const p = eventLogPath(teamName, cwd);
+  } as TeamEvent;
+  const p = teamEventLogPath(teamName, cwd);
   await mkdir(dirname(p), { recursive: true });
   await appendFile(p, `${JSON.stringify(full)}\n`, 'utf8');
   return full;

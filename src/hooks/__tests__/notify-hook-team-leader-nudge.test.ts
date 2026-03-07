@@ -361,6 +361,72 @@ describe('notify-hook team leader nudge', () => {
         e.type === 'leader_notification_deferred' && e.reason === 'leader_pane_missing_no_injection');
       assert.ok(deferred);
       assert.equal(deferred.type, 'leader_notification_deferred');
+      assert.equal(deferred.worker, 'leader-fixed');
+      assert.equal(deferred.to_worker, 'leader-fixed');
+      assert.equal(deferred.tmux_session, 'devsess:0');
+      assert.equal(deferred.leader_pane_id, null);
+      assert.equal(deferred.tmux_injection_attempted, false);
+
+      const nudgeStatePath = join(stateDir, 'team-leader-nudge.json');
+      assert.ok(existsSync(nudgeStatePath), 'nudge state should still advance on deferred leader visibility');
+      const nudgeState = JSON.parse(await readFile(nudgeStatePath, 'utf-8'));
+      assert.ok(nudgeState.last_nudged_by_team?.[teamName]?.at);
+    });
+  });
+
+  it('bounds repeated all-workers-idle nudges by cooldown', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const teamName = 'idle-bounded';
+      const teamDir = join(stateDir, 'team', teamName);
+      const workersDir = join(teamDir, 'workers');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(workersDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(stateDir, 'team-state.json'), {
+        active: true,
+        team_name: teamName,
+        current_phase: 'team-exec',
+      });
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'idle-bounded:0',
+        leader_pane_id: '%98',
+        workers: [
+          { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
+          { name: 'worker-2', index: 2, role: 'executor', assigned_tasks: [] },
+        ],
+      });
+      await writeJson(join(stateDir, 'hud-state.json'), {
+        last_turn_at: new Date().toISOString(),
+        turn_count: 1,
+      });
+      for (const worker of ['worker-1', 'worker-2']) {
+        await mkdir(join(workersDir, worker), { recursive: true });
+        await writeJson(join(workersDir, worker, 'status.json'), {
+          state: 'idle',
+          updated_at: new Date().toISOString(),
+        });
+      }
+
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const first = runNotifyHook(cwd, fakeBinDir, { OMX_TEAM_LEADER_ALL_IDLE_COOLDOWN_MS: '600000' });
+      assert.equal(first.status, 0, `notify-hook failed: ${first.stderr || first.stdout}`);
+      const second = runNotifyHook(cwd, fakeBinDir, { OMX_TEAM_LEADER_ALL_IDLE_COOLDOWN_MS: '600000' });
+      assert.equal(second.status, 0, `notify-hook failed: ${second.stderr || second.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      const sends = tmuxLog.match(/send-keys -t %98 -l \[OMX\] All 2 workers idle/g) || [];
+      assert.equal(sends.length, 1, 'cooldown should keep repeated all-workers-idle leader nudges bounded');
     });
   });
 

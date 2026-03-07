@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { killWorkerPanes } from '../team/tmux-session.js';
 import { teamReadConfig as readTeamConfig } from '../team/team-ops.js';
 import { NudgeTracker } from '../team/idle-nudge.js';
+import { getLatestTeamEventCursor, waitForTeamEvent } from '../team/state/events.js';
 import { shouldAutoStartMcpServer } from './bootstrap.js';
 
 // ---------------------------------------------------------------------------
@@ -43,6 +44,8 @@ const waitSchema = z.object({
   nudge_delay_ms: z.number().optional(),
   nudge_max_count: z.number().optional(),
   nudge_message: z.string().optional(),
+  wake_on: z.enum(['terminal', 'event']).optional().default('terminal'),
+  after_event_id: z.string().optional(),
 });
 
 const cleanupSchema = z.object({
@@ -273,7 +276,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'omx_run_team_wait',
-      description: 'Block (poll internally) until a background omx_run_team job reaches a terminal state (completed or failed). Returns the result when done. One call instead of N polling calls. Uses exponential backoff (500ms to 2000ms). Auto-nudges idle teammate panes via tmux send-keys. If this wait call times out, workers are left running -- call omx_run_team_wait again to keep waiting, or omx_run_team_cleanup to stop them explicitly.',
+      description: 'Block (poll internally) until a background omx_run_team job reaches a terminal state (completed or failed) or, in wake_on=event mode, until the next team event arrives. Uses exponential backoff (500ms to 2000ms). Auto-nudges idle teammate panes via tmux send-keys. If this wait call times out, workers are left running -- call omx_run_team_wait again to keep waiting, or omx_run_team_cleanup to stop them explicitly.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -282,6 +285,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           nudge_delay_ms: { type: 'number', description: 'Milliseconds a pane must be idle before nudging (default: 30000)' },
           nudge_max_count: { type: 'number', description: 'Maximum nudges per pane (default: 3)' },
           nudge_message: { type: 'string', description: 'Message sent as nudge (default: "Continue working on your assigned task.")' },
+          wake_on: { type: 'string', enum: ['terminal', 'event'], description: 'Wake on terminal completion (default) or the next team event.' },
+          after_event_id: { type: 'string', description: 'Optional event cursor; in wake_on=event mode, wait for the next event after this id.' },
         },
         required: ['job_id'],
       },
@@ -385,10 +390,19 @@ export async function handleTeamToolCall(request: {
       }
 
       case 'omx_run_team_wait': {
-        const { job_id: jobId, timeout_ms: timeoutMs, nudge_delay_ms: nudgeDelayMs, nudge_max_count: nudgeMaxCount, nudge_message: nudgeMessage } = waitSchema.parse(a);
+        const {
+          job_id: jobId,
+          timeout_ms: timeoutMs,
+          nudge_delay_ms: nudgeDelayMs,
+          nudge_max_count: nudgeMaxCount,
+          nudge_message: nudgeMessage,
+          wake_on: wakeOn,
+          after_event_id: afterEventId,
+        } = waitSchema.parse(a);
 
         const deadline = Date.now() + Math.min(timeoutMs, 3_600_000);
         let pollDelay = 500;
+        let eventCursor = afterEventId;
 
         const nudgeTracker = new NudgeTracker({
           ...(nudgeDelayMs != null ? { delayMs: nudgeDelayMs } : {}),
@@ -424,8 +438,38 @@ export async function handleTeamToolCall(request: {
             if (nudgeTracker.totalNudges > 0) out.nudges = nudgeTracker.getSummary();
             return { content: [{ type: 'text' as const, text: JSON.stringify(out) }] };
           }
-          // Yield to Node.js event loop -- lets child.on('close', ...) fire between polls.
-          await new Promise<void>(r => setTimeout(r, pollDelay));
+
+          let waitedForEvent = false;
+          if (wakeOn === 'event' && job.teamName && job.cwd) {
+            if (!eventCursor) {
+              eventCursor = await getLatestTeamEventCursor(job.teamName, job.cwd);
+            }
+            const eventResult = await waitForTeamEvent(job.teamName, job.cwd, {
+              afterEventId: eventCursor,
+              timeoutMs: pollDelay,
+              pollMs: Math.min(pollDelay, 200),
+              wakeableOnly: true,
+            });
+            waitedForEvent = true;
+            if (eventResult.status === 'event' && eventResult.event) {
+              eventCursor = eventResult.cursor;
+              const elapsed = ((Date.now() - job.startedAt) / 1000).toFixed(1);
+              const out: Record<string, unknown> = {
+                jobId,
+                status: 'running',
+                elapsedSeconds: elapsed,
+                wake_on: 'event',
+                cursor: eventResult.cursor,
+                event: eventResult.event,
+              };
+              if (nudgeTracker.totalNudges > 0) out.nudges = nudgeTracker.getSummary();
+              return { content: [{ type: 'text' as const, text: JSON.stringify(out) }] };
+            }
+          }
+          if (!waitedForEvent) {
+            // Yield to Node.js event loop -- lets child.on('close', ...) fire between polls.
+            await new Promise<void>(r => setTimeout(r, pollDelay));
+          }
           pollDelay = Math.min(Math.floor(pollDelay * 1.5), 2000);
 
           // Auto-nudge idle panes
@@ -447,6 +491,7 @@ export async function handleTeamToolCall(request: {
           error: `Timed out waiting for job ${jobId} after ${(timeoutMs / 1000).toFixed(0)}s -- workers are still running; call omx_run_team_wait again to keep waiting or omx_run_team_cleanup to stop them`,
           jobId,
           status: 'running',
+          wake_on: wakeOn,
           elapsedSeconds: elapsed,
         };
         if (nudgeTracker.totalNudges > 0) timeoutOut.nudges = nudgeTracker.getSummary();

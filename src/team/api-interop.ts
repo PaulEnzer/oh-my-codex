@@ -534,6 +534,10 @@ export async function executeTeamApiOperation(
           task_id: args.task_id as string | undefined,
           message_id: (args.message_id as string | undefined) ?? null,
           reason: args.reason as string | undefined,
+          state: args.state as string | undefined,
+          prev_state: args.prev_state as string | undefined,
+          to_worker: args.to_worker as string | undefined,
+          worker_count: typeof args.worker_count === 'number' ? args.worker_count : undefined,
         }, cwd);
         return { ok: true, operation, data: { event } };
       }

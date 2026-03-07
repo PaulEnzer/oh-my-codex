@@ -129,6 +129,16 @@ describe('notify-hook all-workers-idle notification', () => {
       const deferredEvent = events.find((e: { type: string; reason?: string }) =>
         e.type === 'leader_notification_deferred' && e.reason === 'leader_pane_missing_no_injection');
       assert.ok(deferredEvent, 'should emit leader_notification_deferred with missing-pane reason');
+      assert.equal(deferredEvent.to_worker, 'leader-fixed');
+      assert.equal(deferredEvent.tmux_session, 'devsess:0');
+      assert.equal(deferredEvent.leader_pane_id, null);
+      assert.equal(deferredEvent.tmux_injection_attempted, false);
+
+      const idleStatePath = join(teamDir, 'all-workers-idle.json');
+      assert.ok(existsSync(idleStatePath), 'cooldown state should be written even for deferred delivery');
+      const idleState = JSON.parse(await readFile(idleStatePath, 'utf-8'));
+      assert.equal(idleState.delivery, 'deferred');
+      assert.equal(idleState.worker_count, 2);
 
       const logPath = join(logsDir, `tmux-hook-${new Date().toISOString().split('T')[0]}.jsonl`);
       assert.ok(existsSync(logPath), 'tmux hook log should exist');
@@ -139,6 +149,55 @@ describe('notify-hook all-workers-idle notification', () => {
           entry.type === 'leader_notification_deferred' && entry.reason === 'leader_pane_missing_no_injection');
       assert.ok(warn, 'should log leader_notification_deferred warning');
       assert.equal(warn.tmux_injection_attempted, false);
+    });
+  });
+
+  it('writes deferred visibility once per cooldown window when leader pane is missing', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const teamName = 'missing-pane-repeat';
+      const teamDir = join(stateDir, 'team', teamName);
+      const workersDir = join(teamDir, 'workers');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(workersDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'devsess:11',
+        workers: [
+          { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
+          { name: 'worker-2', index: 2, role: 'executor', assigned_tasks: [] },
+        ],
+      });
+
+      for (const worker of ['worker-1', 'worker-2']) {
+        await mkdir(join(workersDir, worker), { recursive: true });
+        await writeJson(join(workersDir, worker, 'status.json'), {
+          state: 'idle',
+          updated_at: new Date().toISOString(),
+        });
+      }
+
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const first = runNotifyHookAsWorker(cwd, fakeBinDir, `${teamName}/worker-1`, { OMX_TEAM_ALL_IDLE_COOLDOWN_MS: '600000' });
+      assert.equal(first.status, 0, `notify-hook failed: ${first.stderr || first.stdout}`);
+      const second = runNotifyHookAsWorker(cwd, fakeBinDir, `${teamName}/worker-1`, { OMX_TEAM_ALL_IDLE_COOLDOWN_MS: '600000' });
+      assert.equal(second.status, 0, `notify-hook failed: ${second.stderr || second.stdout}`);
+
+      const eventsPath = join(teamDir, 'events', 'events.ndjson');
+      const events = (await readFile(eventsPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const deferredEvents = events.filter((event: { type?: string; reason?: string }) =>
+        event.type === 'leader_notification_deferred' && event.reason === 'leader_pane_missing_no_injection');
+      assert.equal(deferredEvents.length, 1, 'cooldown should bound repeated deferred all-workers-idle artifacts');
     });
   });
 

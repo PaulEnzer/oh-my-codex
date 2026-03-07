@@ -2,6 +2,7 @@ import { updateModeState, startMode, readModeState } from '../modes/base.js';
 import { monitorTeam, resumeTeam, shutdownTeam, startTeam, type TeamRuntime } from '../team/runtime.js';
 import { DEFAULT_MAX_WORKERS } from '../team/state.js';
 import { sanitizeTeamName } from '../team/tmux-session.js';
+import { waitForTeamEvent } from '../team/state/events.js';
 import { parseWorktreeMode, type WorktreeMode } from '../team/worktree.js';
 import { routeTaskToRole } from '../team/role-router.js';
 import {
@@ -10,6 +11,7 @@ import {
   executeTeamApiOperation,
   type TeamApiOperation,
 } from '../team/api-interop.js';
+import { teamReadConfig as readTeamConfig } from '../team/team-ops.js';
 
 interface TeamCliOptions {
   verbose?: boolean;
@@ -28,6 +30,7 @@ const MIN_WORKER_COUNT = 1;
 const TEAM_HELP = `
 Usage: omx team [ralph] [N:agent-type] "<task description>"
        omx team status <team-name>
+       omx team await <team-name> [--timeout-ms <ms>] [--after-event-id <id>] [--json]
        omx team resume <team-name>
        omx team shutdown <team-name> [--force] [--ralph]
        omx team api <operation> [--input <json>] [--json]
@@ -527,6 +530,62 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
         `monitor_perf_ms: total=${snapshot.performance.total_ms} list=${snapshot.performance.list_tasks_ms} workers=${snapshot.performance.worker_scan_ms} mailbox=${snapshot.performance.mailbox_delivery_ms}`
       );
     }
+    return;
+  }
+
+  if (subcommand === 'await') {
+    const name = teamArgs[1];
+    if (!name) throw new Error('Usage: omx team await <team-name> [--timeout-ms <ms>] [--after-event-id <id>] [--json]');
+    const wantsJson = teamArgs.includes('--json');
+    const timeoutIdx = teamArgs.indexOf('--timeout-ms');
+    const afterIdx = teamArgs.indexOf('--after-event-id');
+    const timeoutMs = timeoutIdx >= 0 && teamArgs[timeoutIdx + 1]
+      ? Math.max(1, Number.parseInt(teamArgs[timeoutIdx + 1]!, 10) || 0)
+      : 30_000;
+    const afterEventId = afterIdx >= 0 ? (teamArgs[afterIdx + 1] || '') : '';
+    const config = await readTeamConfig(name, cwd);
+    if (!config) {
+      if (wantsJson) {
+        console.log(JSON.stringify({ team_name: name, status: 'missing', cursor: afterEventId || '', event: null }));
+      } else {
+        console.log(`No team state found for ${name}`);
+      }
+      return;
+    }
+
+    const result = await waitForTeamEvent(name, cwd, {
+      afterEventId: afterEventId || undefined,
+      timeoutMs,
+      pollMs: 100,
+      wakeableOnly: true,
+    });
+
+    if (wantsJson) {
+      console.log(JSON.stringify({
+        team_name: sanitizeTeamName(name),
+        status: result.status,
+        cursor: result.cursor,
+        event: result.event ?? null,
+      }));
+      return;
+    }
+
+    if (result.status === 'timeout') {
+      console.log(`No new event for ${name} before timeout (${timeoutMs}ms).`);
+      return;
+    }
+
+    const event = result.event!;
+    const context = [
+      `team=${name}`,
+      `event=${event.type}`,
+      `worker=${event.worker}`,
+      event.state ? `state=${event.state}` : '',
+      event.prev_state ? `prev=${event.prev_state}` : '',
+      event.task_id ? `task=${event.task_id}` : '',
+      `cursor=${result.cursor}`,
+    ].filter(Boolean).join(' ');
+    console.log(context);
     return;
   }
 

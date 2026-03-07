@@ -96,3 +96,12 @@ describe('runtime-cli helpers', () => {
     }
   });
 });
+
+
+  it('does not treat leader pane as a worker pane for dead-worker detection', async () => {
+    const runtimeCli = await loadRuntimeCliModule();
+
+    const result = runtimeCli.detectDeadWorkerFailure(1, 1, true, 'team-exec');
+    assert.equal(result.deadWorkerFailure, true);
+    assert.equal(result.fixingWithNoWorkers, false);
+  });

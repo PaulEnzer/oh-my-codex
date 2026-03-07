@@ -597,7 +597,7 @@ process.on('SIGTERM', () => {
     }
   });
 
-  it('monitorTeam emits worker_idle and task_completed events based on transitions', async () => {
+  it('monitorTeam emits worker_state_changed, worker_idle, and task_completed events based on transitions', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-'));
     try {
       await initTeamState('team-events', 'monitor event test', 'executor', 1, cwd);
@@ -621,6 +621,7 @@ process.on('SIGTERM', () => {
       const eventsPath = join(cwd, '.omx', 'state', 'team', 'team-events', 'events', 'events.ndjson');
       const content = await readFile(eventsPath, 'utf-8');
       assert.match(content, /\"type\":\"task_completed\"/);
+      assert.match(content, /\"type\":\"worker_state_changed\"/);
       assert.match(content, /\"type\":\"worker_idle\"/);
     } finally {
       await rm(cwd, { recursive: true, force: true });

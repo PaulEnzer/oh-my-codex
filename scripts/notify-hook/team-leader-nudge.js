@@ -111,7 +111,7 @@ export async function emitTeamNudgeEvent(cwd, teamName, reason, nowIso) {
   }
 }
 
-async function emitLeaderNudgeDeferredEvent(cwd, teamName, reason, nowIso) {
+async function emitLeaderNudgeDeferredEvent(cwd, teamName, reason, nowIso, { tmuxSession = '', leaderPaneId = '' } = {}) {
   const eventsDir = join(cwd, '.omx', 'state', 'team', teamName, 'events');
   const eventsPath = join(eventsDir, 'events.ndjson');
   try {
@@ -124,6 +124,9 @@ async function emitLeaderNudgeDeferredEvent(cwd, teamName, reason, nowIso) {
       to_worker: 'leader-fixed',
       reason,
       created_at: nowIso,
+      tmux_session: tmuxSession || null,
+      leader_pane_id: leaderPaneId || null,
+      tmux_injection_attempted: false,
     };
     await appendFile(eventsPath, JSON.stringify(event) + '\n');
   } catch {
@@ -257,7 +260,14 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     const markedText = `${capped} ${DEFAULT_MARKER}`;
 
     if (!tmuxTarget) {
-      await emitLeaderNudgeDeferredEvent(cwd, teamName, LEADER_PANE_MISSING_NO_INJECTION_REASON, nowIso);
+      nudgeState.last_nudged_by_team[teamName] = { at: nowIso, last_message_id: newestId || prevMsgId || '' };
+      if (shouldSendAllIdleNudge) {
+        nudgeState.last_idle_nudged_by_team[teamName] = { at: nowIso, worker_count: workerNames.length };
+      }
+      await emitLeaderNudgeDeferredEvent(cwd, teamName, LEADER_PANE_MISSING_NO_INJECTION_REASON, nowIso, {
+        tmuxSession,
+        leaderPaneId,
+      });
       try {
         await logTmuxHookEvent(logsDir, {
           timestamp: nowIso,
@@ -266,7 +276,7 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
           worker: 'leader-fixed',
           to_worker: 'leader-fixed',
           reason: LEADER_PANE_MISSING_NO_INJECTION_REASON,
-          leader_pane_id: null,
+          leader_pane_id: leaderPaneId || null,
           tmux_session: tmuxSession || null,
           tmux_injection_attempted: false,
         });

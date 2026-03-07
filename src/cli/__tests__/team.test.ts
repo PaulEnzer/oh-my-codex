@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseTeamStartArgs, teamCommand } from '../team.js';
 import { DEFAULT_MAX_WORKERS } from '../../team/state.js';
-import { initTeamState } from '../../team/state.js';
+import { initTeamState, appendTeamEvent } from '../../team/state.js';
 
 describe('parseTeamStartArgs', () => {
   it('parses default team start args without worktree', () => {
@@ -79,6 +79,8 @@ describe('teamCommand api', () => {
       assert.equal(logs.length, 1);
       assert.match(logs[0] ?? '', /Usage: omx team \[ralph\] \[N:agent-type\]/);
       assert.match(logs[0] ?? '', /omx team api <operation>/);
+      assert.match(logs[0] ?? '', /omx team await <team-name>/);
+      assert.match(logs[0] ?? '', /omx team await <team-name>/);
     } finally {
       console.log = originalLog;
     }
@@ -93,6 +95,7 @@ describe('teamCommand api', () => {
       assert.equal(logs.length, 1);
       assert.match(logs[0] ?? '', /Usage: omx team \[ralph\] \[N:agent-type\]/);
       assert.match(logs[0] ?? '', /omx team api <operation>/);
+      assert.match(logs[0] ?? '', /omx team await <team-name>/);
     } finally {
       console.log = originalLog;
     }
@@ -303,6 +306,91 @@ describe('teamCommand api', () => {
       assert.equal(transitioned.ok, true);
       assert.equal(transitioned.data?.ok, true);
       assert.equal(transitioned.data?.task?.status, 'completed');
+    } finally {
+      console.log = originalLog;
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+
+  it('accepts new canonical event types via CLI api append-event', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-api-event-'));
+    const previousCwd = process.cwd();
+    const logs: string[] = [];
+    const originalLog = console.log;
+    try {
+      process.chdir(wd);
+      await initTeamState('event-team', 'event test', 'executor', 1, wd);
+      console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
+
+      await teamCommand([
+        'api',
+        'append-event',
+        '--input',
+        JSON.stringify({
+          team_name: 'event-team',
+          type: 'leader_notification_deferred',
+          worker: 'worker-1',
+          to_worker: 'leader-fixed',
+          reason: 'leader_pane_missing_no_injection',
+        }),
+        '--json',
+      ]);
+
+      const envelope = JSON.parse(logs.at(-1) ?? '{}') as {
+        ok?: boolean;
+        data?: { event?: { type?: string; to_worker?: string; reason?: string } };
+      };
+      assert.equal(envelope.ok, true);
+      assert.equal(envelope.data?.event?.type, 'leader_notification_deferred');
+      assert.equal(envelope.data?.event?.to_worker, 'leader-fixed');
+      assert.equal(envelope.data?.event?.reason, 'leader_pane_missing_no_injection');
+    } finally {
+      console.log = originalLog;
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+});
+
+
+describe('teamCommand await', () => {
+  it('returns next canonical event for a team in JSON mode', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-await-'));
+    const previousCwd = process.cwd();
+    const logs: string[] = [];
+    const originalLog = console.log;
+    try {
+      process.chdir(wd);
+      await initTeamState('await-team', 'await test', 'executor', 1, wd);
+      console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
+
+      const waitPromise = teamCommand(['await', 'await-team', '--json', '--timeout-ms', '500']);
+      setTimeout(() => {
+        void appendTeamEvent('await-team', {
+          type: 'worker_state_changed',
+          worker: 'worker-1',
+          state: 'blocked',
+          prev_state: 'working',
+          reason: 'needs_follow_up',
+        }, wd);
+      }, 50);
+      await waitPromise;
+
+      const payload = JSON.parse(logs.at(-1) ?? '{}') as {
+        team_name?: string;
+        status?: string;
+        cursor?: string;
+        event?: { type?: string; state?: string; prev_state?: string; reason?: string } | null;
+      };
+      assert.equal(payload.team_name, 'await-team');
+      assert.equal(payload.status, 'event');
+      assert.equal(typeof payload.cursor, 'string');
+      assert.equal(payload.event?.type, 'worker_state_changed');
+      assert.equal(payload.event?.state, 'blocked');
+      assert.equal(payload.event?.prev_state, 'working');
+      assert.equal(payload.event?.reason, 'needs_follow_up');
     } finally {
       console.log = originalLog;
       process.chdir(previousCwd);

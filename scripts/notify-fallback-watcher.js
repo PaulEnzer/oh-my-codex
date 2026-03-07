@@ -30,6 +30,13 @@ const fileState = new Map();
 const seenTurnKeys = new Set();
 let stopping = false;
 const dispatchTickMax = Number(argValue('--dispatch-max-per-tick', '5')) || 5;
+let dispatchDrainRuns = 0;
+let lastDispatchDrain = {
+  leader_only: safeString(process.env.OMX_TEAM_WORKER || '').trim() === '',
+  last_tick_at: null,
+  last_result: null,
+  last_error: null,
+};
 
 function safeString(v) {
   return typeof v === 'string' ? v : '';
@@ -194,6 +201,43 @@ async function pollFiles() {
   }
 }
 
+async function runDispatchDrainTick() {
+  const startedIso = new Date().toISOString();
+  try {
+    const result = await drainPendingTeamDispatch({ cwd, stateDir, logsDir, maxPerTick: dispatchTickMax });
+    dispatchDrainRuns += 1;
+    lastDispatchDrain = {
+      leader_only: safeString(process.env.OMX_TEAM_WORKER || '').trim() === '',
+      last_tick_at: startedIso,
+      last_result: result,
+      last_error: null,
+    };
+    await eventLog({
+      type: 'dispatch_drain_tick',
+      leader_only: lastDispatchDrain.leader_only,
+      dispatch_max_per_tick: dispatchTickMax,
+      run_count: dispatchDrainRuns,
+      ...(result && typeof result === 'object' ? result : {}),
+    });
+  } catch (err) {
+    dispatchDrainRuns += 1;
+    lastDispatchDrain = {
+      leader_only: safeString(process.env.OMX_TEAM_WORKER || '').trim() === '',
+      last_tick_at: startedIso,
+      last_result: null,
+      last_error: err instanceof Error ? err.message : safeString(err),
+    };
+    await eventLog({
+      type: 'dispatch_drain_tick',
+      leader_only: lastDispatchDrain.leader_only,
+      dispatch_max_per_tick: dispatchTickMax,
+      run_count: dispatchDrainRuns,
+      reason: 'dispatch_drain_failed',
+      error: lastDispatchDrain.last_error,
+    });
+  }
+}
+
 async function writeState() {
   await mkdir(stateDir, { recursive: true }).catch(() => {});
   const state = {
@@ -204,6 +248,12 @@ async function writeState() {
     poll_ms: pollMs,
     tracked_files: fileState.size,
     seen_turns: seenTurnKeys.size,
+    dispatch_drain: {
+      enabled: true,
+      max_per_tick: dispatchTickMax,
+      run_count: dispatchDrainRuns,
+      ...lastDispatchDrain,
+    },
   };
   await writeFile(statePath, JSON.stringify(state, null, 2)).catch(() => {});
 }
@@ -212,7 +262,7 @@ async function tick() {
   if (stopping) return;
   await ensureTrackedFiles();
   await pollFiles();
-  await drainPendingTeamDispatch({ cwd, stateDir, logsDir, maxPerTick: dispatchTickMax }).catch(() => {});
+  await runDispatchDrainTick();
   await writeState();
   setTimeout(tick, pollMs);
 }
@@ -244,7 +294,7 @@ async function main() {
   if (runOnce) {
     await ensureTrackedFiles();
     await pollFiles();
-    await drainPendingTeamDispatch({ cwd, stateDir, logsDir, maxPerTick: dispatchTickMax }).catch(() => {});
+    await runDispatchDrainTick();
     await writeState();
     await eventLog({ type: 'watcher_once_complete', seen_turns: seenTurnKeys.size });
     process.exit(0);

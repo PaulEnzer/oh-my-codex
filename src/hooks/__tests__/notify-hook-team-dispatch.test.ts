@@ -159,6 +159,53 @@ describe('notify-hook team dispatch consumer', () => {
         && event.request_id === queued.request.request_id
         && event.to_worker === 'leader-fixed');
       assert.ok(deferred, 'expected leader_notification_deferred event for missing leader pane');
+      assert.equal(typeof deferred.tmux_session, 'string');
+      assert.ok(deferred.tmux_session.length > 0);
+      assert.equal(deferred.leader_pane_id, null);
+      assert.equal(deferred.tmux_injection_attempted, false);
+
+      const dispatchLogPath = join(cwd, '.omx', 'logs', `team-dispatch-${new Date().toISOString().slice(0, 10)}.jsonl`);
+      const dispatchLogs = (await readFile(dispatchLogPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const deferredLog = dispatchLogs.find((entry: { type?: string; request_id?: string }) =>
+        entry.type === 'dispatch_deferred' && entry.request_id === queued.request.request_id);
+      assert.ok(deferredLog, 'expected dispatch_deferred log entry');
+      assert.equal(typeof deferredLog.tmux_session, 'string');
+      assert.ok(deferredLog.tmux_session.length > 0);
+      assert.equal(deferredLog.leader_pane_id, null);
+      assert.equal(deferredLog.tmux_injection_attempted, false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not duplicate deferred leader artifacts across repeated drain ticks', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
+    try {
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      const msg = await sendDirectMessage('alpha', 'worker-1', 'leader-fixed', 'hello leader', cwd);
+      const queued = await enqueueDispatchRequest('alpha', {
+        kind: 'mailbox',
+        to_worker: 'leader-fixed',
+        message_id: msg.message_id,
+        trigger_message: 'check leader mailbox',
+      }, cwd);
+
+      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const mod = await import(pathToFileURL(modulePath).href);
+      await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5, injector: async () => ({ ok: true, reason: 'injected_for_test' }) });
+      await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5, injector: async () => ({ ok: true, reason: 'injected_for_test' }) });
+
+      const eventsPath = join(cwd, '.omx', 'state', 'team', 'alpha', 'events', 'events.ndjson');
+      const events = (await readFile(eventsPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const deferredEvents = events.filter((event: { type?: string; request_id?: string }) =>
+        event.type === 'leader_notification_deferred' && event.request_id === queued.request.request_id);
+      assert.equal(deferredEvents.length, 1, 'should only write one deferred event per missing-pane request until state changes');
+
+      const dispatchLogPath = join(cwd, '.omx', 'logs', `team-dispatch-${new Date().toISOString().slice(0, 10)}.jsonl`);
+      const dispatchLogs = (await readFile(dispatchLogPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const deferredLogs = dispatchLogs.filter((entry: { type?: string; request_id?: string }) =>
+        entry.type === 'dispatch_deferred' && entry.request_id === queued.request.request_id);
+      assert.equal(deferredLogs.length, 1, 'should only log one dispatch_deferred artifact per missing-pane request until state changes');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
