@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   collectInheritableTeamWorkerArgs,
   isLowComplexityAgentType,
+  resolveAgentReasoningEffort,
   resolveTeamWorkerLaunchArgs,
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
   resolveTeamLowComplexityDefaultModel,
@@ -101,10 +102,28 @@ describe('team model contract', () => {
     assert.equal(isLowComplexityAgentType('executor'), false);
     assert.equal(isLowComplexityAgentType('executor-low'), true);
   });
+
+  it('maps worker roles to default reasoning effort tiers', () => {
+    assert.equal(resolveAgentReasoningEffort('explore'), 'low');
+    assert.equal(resolveAgentReasoningEffort('executor'), 'medium');
+    assert.equal(resolveAgentReasoningEffort('architect'), 'high');
+    assert.equal(resolveAgentReasoningEffort('does-not-exist'), undefined);
+  });
 });
 
-describe('resolveTeamWorkerLaunchArgs - explicit thinking only', () => {
-  it('does not auto-inject thinking level for fallback model', () => {
+describe('resolveTeamWorkerLaunchArgs - teammate reasoning allocation', () => {
+  it('injects preferred reasoning when explicit reasoning is absent', () => {
+    const result = resolveTeamWorkerLaunchArgs({
+      fallbackModel: expectedLowComplexityModel(),
+      preferredReasoning: 'low',
+    });
+    assert.deepEqual(
+      result,
+      ['-c', 'model_reasoning_effort="low"', '--model', expectedLowComplexityModel()],
+    );
+  });
+
+  it('does not auto-inject thinking level for fallback model when no preference is provided', () => {
     const result = resolveTeamWorkerLaunchArgs({
       fallbackModel: expectedLowComplexityModel(),
     });
@@ -112,10 +131,11 @@ describe('resolveTeamWorkerLaunchArgs - explicit thinking only', () => {
     assert.ok(!joined.includes('model_reasoning_effort'), `Expected no auto-injected thinking level in: ${joined}`);
   });
 
-  it('preserves explicit reasoning override', () => {
+  it('preserves explicit reasoning override over teammate preference', () => {
     const result = resolveTeamWorkerLaunchArgs({
       existingRaw: '-c model_reasoning_effort="high"',
       fallbackModel: expectedLowComplexityModel(),
+      preferredReasoning: 'low',
     });
     const joined = result.join(' ');
     // Should contain the explicit high level

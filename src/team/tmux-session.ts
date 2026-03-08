@@ -717,7 +717,13 @@ export function createTeamSession(
   workerCount: number,
   cwd: string,
   workerLaunchArgs: string[] = [],
-  workerStartups: Array<{ cwd?: string; env?: Record<string, string>; initialPrompt?: string }> = [],
+  workerStartups: Array<{
+    cwd?: string;
+    env?: Record<string, string>;
+    initialPrompt?: string;
+    launchArgs?: string[];
+    workerCli?: TeamWorkerCli;
+  }> = [],
 ): TeamSession {
   if (!isTmuxAvailable()) {
     throw new Error('tmux is not available');
@@ -729,7 +735,10 @@ export function createTeamSession(
     throw new Error('team mode requires running inside tmux leader pane');
   }
   const normalizedWorkerLaunchArgs = resolveWorkerLaunchArgs(workerLaunchArgs, cwd);
-  const workerCliPlan = resolveTeamWorkerCliPlan(workerCount, normalizedWorkerLaunchArgs, process.env);
+  const defaultWorkerCliPlan = resolveTeamWorkerCliPlan(workerCount, normalizedWorkerLaunchArgs, process.env);
+  const workerCliPlan = workerStartups.length > 0
+    ? workerStartups.map((startup, index) => startup.workerCli ?? defaultWorkerCliPlan[index]!)
+    : defaultWorkerCliPlan;
   for (const workerCli of new Set(workerCliPlan)) {
     assertTeamWorkerCliBinaryAvailable(workerCli);
   }
@@ -769,10 +778,11 @@ export function createTeamSession(
       const workerCwd = startup.cwd || cwd;
       const tmuxWorkerCwd = translatePathForMsys(workerCwd);
       const workerEnv = startup.env || {};
+      const launchArgsForWorker = startup.launchArgs || workerLaunchArgs;
       const cmd = buildWorkerStartupCommand(
         safeTeamName,
         i,
-        workerLaunchArgs,
+        launchArgsForWorker,
         workerCwd,
         workerEnv,
         workerCliPlan[i - 1],

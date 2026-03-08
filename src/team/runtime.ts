@@ -10,6 +10,7 @@ import {
   createTeamSession,
   buildWorkerProcessLaunchSpec,
   resolveTeamWorkerCli,
+  type TeamWorkerCli,
   resolveTeamWorkerCliPlan,
   resolveTeamWorkerLaunchMode,
   waitForWorkerReady,
@@ -95,6 +96,8 @@ import {
   resolveTeamLowComplexityDefaultModel,
   parseTeamWorkerLaunchArgs,
   splitWorkerLaunchArgs,
+  resolveAgentReasoningEffort,
+  type TeamReasoningEffort,
 } from './model-contract.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
 import { inferPhaseTargetFromTaskCounts, reconcilePhaseStateForMonitor } from './phase-controller.js';
@@ -412,6 +415,8 @@ export function resolveWorkerLaunchArgsFromEnv(
   env: NodeJS.ProcessEnv,
   agentType: string,
   inheritedLeaderModel?: string,
+  preferredReasoning?: TeamReasoningEffort,
+  workerCliOverride?: TeamWorkerCli,
 ): string[] {
   const inheritedArgs = (typeof inheritedLeaderModel === 'string' && inheritedLeaderModel.trim() !== '')
     ? ['--model', inheritedLeaderModel.trim()]
@@ -429,6 +434,7 @@ export function resolveWorkerLaunchArgsFromEnv(
     existingRaw: env.OMX_TEAM_WORKER_LAUNCH_ARGS,
     inheritedArgs,
     fallbackModel,
+    preferredReasoning,
   });
 
   // Extract resolved model and thinking level from result args for startup log
@@ -436,8 +442,10 @@ export function resolveWorkerLaunchArgsFromEnv(
   const resolvedModel = resolvedParsed.modelOverride ?? fallbackModel ?? 'default';
   const reasoningMatch = resolvedParsed.reasoningOverride?.match(/model_reasoning_effort\s*=\s*"?(\w+)"?/);
   const thinkingLevel = reasoningMatch?.[1] ?? 'none';
-  const source = hasExplicitReasoning ? 'explicit' : 'none/default-none';
-  const effectiveWorkerCli = resolveEffectiveWorkerCliForStartupLog(resolved, env);
+  const source = hasExplicitReasoning
+    ? 'explicit'
+    : (preferredReasoning ? 'role-default' : 'none/default-none');
+  const effectiveWorkerCli = workerCliOverride ?? resolveEffectiveWorkerCliForStartupLog(resolved, env);
   if (effectiveWorkerCli === 'claude') {
     console.log('[omx:team] worker startup resolution: model=claude source=local-settings');
   } else if (effectiveWorkerCli === 'gemini') {
@@ -563,8 +571,13 @@ export async function startTeam(
   const createdWorkerPaneIds: string[] = [];
   let createdLeaderPaneId: string | undefined;
   let config: TeamConfig | null = null;
-  const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(process.env, agentType);
-  const workerCliPlan = resolveTeamWorkerCliPlan(workerCount, workerLaunchArgs, process.env);
+  const sharedWorkerLaunchArgs = resolveTeamWorkerLaunchArgs({
+    existingRaw: process.env.OMX_TEAM_WORKER_LAUNCH_ARGS,
+    fallbackModel: isLowComplexityAgentType(agentType)
+      ? resolveTeamLowComplexityDefaultModel(process.env.CODEX_HOME)
+      : undefined,
+  });
+  const workerCliPlan = resolveTeamWorkerCliPlan(workerCount, sharedWorkerLaunchArgs, process.env);
   const workerReadyTimeoutMs = resolveWorkerReadyTimeoutMs(process.env);
   const skipWorkerReadyWait = shouldSkipWorkerReadyWait(process.env);
 
@@ -616,6 +629,8 @@ export async function startTeam(
       inbox: string;
       trigger: string;
       initialPrompt?: string;
+      workerLaunchArgs: string[];
+      workerCli: TeamWorkerCli;
     }>;
 
     for (let i = 1; i <= workerCount; i++) {
@@ -637,6 +652,14 @@ export async function startTeam(
         rolePromptContent: rolePromptContent ?? undefined,
       });
       const trigger = generateTriggerMessage(workerName, sanitized);
+      const preferredReasoning = resolveAgentReasoningEffort(workerRole) ?? resolveAgentReasoningEffort(agentType);
+      const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(
+        process.env,
+        agentType,
+        undefined,
+        preferredReasoning,
+        workerCliPlan[i - 1],
+      );
       const initialPrompt = workerCliPlan[i - 1] === 'gemini' ? trigger : undefined;
       if (initialPrompt) {
         await writeWorkerInbox(sanitized, workerName, inbox, leaderCwd);
@@ -650,6 +673,8 @@ export async function startTeam(
         inbox,
         trigger,
         initialPrompt,
+        workerLaunchArgs,
+        workerCli: workerCliPlan[i - 1],
       });
     }
 
@@ -671,6 +696,8 @@ export async function startTeam(
         cwd: plan.workerWorkspace.cwd,
         env,
         initialPrompt: plan.initialPrompt,
+        launchArgs: plan.workerLaunchArgs,
+        workerCli: plan.workerCli,
       };
     });
 
@@ -678,7 +705,7 @@ export async function startTeam(
 
     // 6. Create worker runtime (interactive tmux panes or prompt-mode child processes)
     if (workerLaunchMode === 'interactive') {
-      const createdSession = createTeamSession(sanitized, workerCount, leaderCwd, workerLaunchArgs, workerStartups);
+      const createdSession = createTeamSession(sanitized, workerCount, leaderCwd, sharedWorkerLaunchArgs, workerStartups);
       sessionName = createdSession.name;
       sessionCreated = true;
       createdWorkerPaneIds.push(...createdSession.workerPaneIds);
@@ -705,9 +732,9 @@ export async function startTeam(
           workerName,
           i,
           startup.cwd || leaderCwd,
-          workerLaunchArgs,
+          startup.launchArgs || sharedWorkerLaunchArgs,
           startup.env || {},
-          workerCliPlan[i - 1],
+          startup.workerCli || workerCliPlan[i - 1],
           startup.initialPrompt,
         );
         if (config.workers[i - 1]) {

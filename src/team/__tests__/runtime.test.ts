@@ -140,6 +140,34 @@ describe('runtime', () => {
     );
   });
 
+  it('resolveWorkerLaunchArgsFromEnv injects teammate reasoning and logs source=role-default', () => {
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+    try {
+      const lowArgs = resolveWorkerLaunchArgsFromEnv(
+        { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
+        'executor',
+        undefined,
+        'low',
+        'codex',
+      );
+      const highArgs = resolveWorkerLaunchArgsFromEnv(
+        { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
+        'executor',
+        undefined,
+        'high',
+        'codex',
+      );
+      assert.deepEqual(lowArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="low"']);
+      assert.deepEqual(highArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="high"']);
+    } finally {
+      console.log = originalLog;
+    }
+    assert.ok(logs.some((line) => line.includes('thinking_level=low') && line.includes('source=role-default')));
+    assert.ok(logs.some((line) => line.includes('thinking_level=high') && line.includes('source=role-default')));
+  });
+
   it('resolveWorkerLaunchArgsFromEnv preserves explicit reasoning and logs source=explicit', () => {
     const logs: string[] = [];
     const originalLog = console.log;
@@ -225,6 +253,48 @@ describe('runtime', () => {
       console.log = originalLog;
     }
     assert.ok(logs.some((line) => line.includes('thinking_level=high') && line.includes('source=explicit')));
+  });
+
+  it('resolveWorkerLaunchArgsFromEnv keeps claude and gemini startup logs free of thinking_level during teammate allocation', () => {
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+    try {
+      const codexArgs = resolveWorkerLaunchArgsFromEnv(
+        { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
+        'executor',
+        undefined,
+        'high',
+        'codex',
+      );
+      const claudeArgs = resolveWorkerLaunchArgsFromEnv(
+        { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen --model claude-3-7-sonnet' },
+        'executor',
+        undefined,
+        'low',
+        'claude',
+      );
+      const geminiArgs = resolveWorkerLaunchArgsFromEnv(
+        { OMX_TEAM_WORKER_LAUNCH_ARGS: '--model gemini-2.0-pro' },
+        'executor',
+        undefined,
+        'low',
+        'gemini',
+      );
+      assert.deepEqual(codexArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="high"']);
+      assert.deepEqual(claudeArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="low"', '--model', 'claude-3-7-sonnet']);
+      assert.deepEqual(geminiArgs, ['-c', 'model_reasoning_effort="low"', '--model', 'gemini-2.0-pro']);
+    } finally {
+      console.log = originalLog;
+    }
+    const codexLog = logs.find((line) => line.includes('thinking_level=high'));
+    const claudeLog = logs.find((line) => line.includes('model=claude'));
+    const geminiLog = logs.find((line) => line.includes('model=gemini'));
+    assert.ok(codexLog);
+    assert.ok(claudeLog);
+    assert.ok(geminiLog);
+    assert.doesNotMatch(claudeLog ?? '', /thinking_level=/);
+    assert.doesNotMatch(geminiLog ?? '', /thinking_level=/);
   });
 
   it('resolveWorkerLaunchArgsFromEnv logs source=none/default-none when thinking is not explicit', () => {

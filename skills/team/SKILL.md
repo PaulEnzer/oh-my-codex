@@ -147,15 +147,15 @@ Model precedence (highest to lowest):
 Thinking-level rule (critical):
 - **No model-name heuristic mapping.**
 - Team runtime must **not** infer `model_reasoning_effort` from model-name substrings (e.g., `spark`, `high-capability`, `mini`).
-- Worker thinking level is applied **only when explicitly provided** (leader/user launch args or explicit config).
-- If no explicit thinking value is provided, runtime leaves `model_reasoning_effort` unset.
+- When the leader assigns teammate roles/tasks, OMX allocates **per-worker reasoning effort dynamically** from the resolved worker role (`low`, `medium`, `high`).
+- Explicit launch args still win: if `OMX_TEAM_WORKER_LAUNCH_ARGS` already includes `-c model_reasoning_effort=...`, that explicit value overrides dynamic allocation for every worker.
 
 Normalization requirements:
 - Parse both `--model <value>` and `--model=<value>`
 - Remove duplicate/conflicting model flags
 - Emit exactly one final canonical flag: `--model <value>`
 - Preserve unrelated args in worker launch config
-- If explicit reasoning exists, preserve canonical `-c model_reasoning_effort="<level>"`; otherwise do not inject one
+- If explicit reasoning exists, preserve canonical `-c model_reasoning_effort="<level>"`; otherwise inject the worker role's default reasoning level
 
 ## Required Lifecycle (Operator Contract)
 

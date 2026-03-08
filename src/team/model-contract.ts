@@ -1,3 +1,4 @@
+import { getAgent } from '../agents/definitions.js';
 import { getTeamLowComplexityModel, HARDCODED_TEAM_LOW_COMPLEXITY_MODEL } from '../config/models.js';
 
 const MADMAX_FLAG = '--madmax';
@@ -14,6 +15,7 @@ const LOW_COMPLEXITY_AGENT_TYPES = new Set([
 ]);
 
 export const TEAM_LOW_COMPLEXITY_DEFAULT_MODEL = HARDCODED_TEAM_LOW_COMPLEXITY_MODEL;
+export type TeamReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
 export interface ParsedTeamWorkerLaunchArgs {
   passthrough: string[];
@@ -26,6 +28,7 @@ export interface ResolveTeamWorkerLaunchArgsOptions {
   existingRaw?: string;
   inheritedArgs?: string[];
   fallbackModel?: string;
+  preferredReasoning?: TeamReasoningEffort;
 }
 
 function isReasoningOverride(value: string): boolean {
@@ -40,6 +43,15 @@ function normalizeOptionalModel(model?: string | null): string | undefined {
   if (typeof model !== 'string') return undefined;
   const trimmed = model.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeOptionalReasoning(reasoning?: TeamReasoningEffort | string | null): TeamReasoningEffort | undefined {
+  if (typeof reasoning !== 'string') return undefined;
+  const normalized = reasoning.trim().toLowerCase();
+  if (normalized === 'low' || normalized === 'medium' || normalized === 'high' || normalized === 'xhigh') {
+    return normalized;
+  }
+  return undefined;
 }
 
 export function splitWorkerLaunchArgs(raw: string | undefined): string[] {
@@ -112,12 +124,21 @@ export function collectInheritableTeamWorkerArgs(codexArgs: string[]): string[] 
   return inherited;
 }
 
-export function normalizeTeamWorkerLaunchArgs(args: string[], preferredModel?: string): string[] {
+export function normalizeTeamWorkerLaunchArgs(
+  args: string[],
+  preferredModel?: string,
+  preferredReasoning?: TeamReasoningEffort,
+): string[] {
   const parsed = parseTeamWorkerLaunchArgs(args);
   const normalized = [...parsed.passthrough];
 
   if (parsed.wantsBypass) normalized.push(CODEX_BYPASS_FLAG);
-  if (parsed.reasoningOverride) normalized.push(CONFIG_FLAG, parsed.reasoningOverride);
+
+  const selectedReasoning = parsed.reasoningOverride
+    ?? (normalizeOptionalReasoning(preferredReasoning)
+      ? `${REASONING_KEY}="${normalizeOptionalReasoning(preferredReasoning)}"`
+      : null);
+  if (selectedReasoning) normalized.push(CONFIG_FLAG, selectedReasoning);
 
   const selectedModel = normalizeOptionalModel(preferredModel) ?? normalizeOptionalModel(parsed.modelOverride);
   if (selectedModel) normalized.push(MODEL_FLAG, selectedModel);
@@ -134,7 +155,12 @@ export function resolveTeamWorkerLaunchArgs(options: ResolveTeamWorkerLaunchArgs
   const inheritedModel = normalizeOptionalModel(parseTeamWorkerLaunchArgs(inheritedArgs).modelOverride);
   const fallbackModel = normalizeOptionalModel(options.fallbackModel);
   const selectedModel = envModel ?? inheritedModel ?? fallbackModel;
-  return normalizeTeamWorkerLaunchArgs(allArgs, selectedModel);
+  return normalizeTeamWorkerLaunchArgs(allArgs, selectedModel, options.preferredReasoning);
+}
+
+export function resolveAgentReasoningEffort(agentType?: string): TeamReasoningEffort | undefined {
+  if (typeof agentType !== 'string' || agentType.trim() === '') return undefined;
+  return normalizeOptionalReasoning(getAgent(agentType)?.reasoningEffort);
 }
 
 export function isLowComplexityAgentType(agentType?: string): boolean {

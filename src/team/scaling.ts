@@ -55,7 +55,9 @@ import { codexPromptsDir } from '../utils/paths.js';
 import {
   resolveTeamWorkerLaunchArgs,
   isLowComplexityAgentType,
-  TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
+  resolveAgentReasoningEffort,
+  resolveTeamLowComplexityDefaultModel,
+  type TeamReasoningEffort,
 } from './model-contract.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
 
@@ -200,9 +202,9 @@ export async function scaleUp(
       return { ok: false, error };
     };
 
-    // Resolve worker launch args
-    const workerLaunchArgs = resolveWorkerLaunchArgsForScaling(env, agentType);
-    const workerCliPlan = resolveTeamWorkerCliPlan(count, workerLaunchArgs, env);
+    // Resolve shared worker launch args for CLI selection.
+    const sharedWorkerLaunchArgs = resolveWorkerLaunchArgsForScaling(env, agentType);
+    const workerCliPlan = resolveTeamWorkerCliPlan(count, sharedWorkerLaunchArgs, env);
 
     for (let i = 0; i < count; i++) {
       const workerIndex = nextIndex;
@@ -213,11 +215,23 @@ export async function scaleUp(
       const workerDirPath = join(leaderCwd, '.omx', 'state', 'team', sanitized, 'workers', workerName);
       await mkdir(workerDirPath, { recursive: true });
 
+      // Resolve per-worker role from assigned task roles before launch so reasoning effort can vary by teammate.
+      const workerTaskRoles = tasks.filter(t => t.owner === workerName).map(t => t.role).filter(Boolean) as string[];
+      const uniqueTaskRoles = new Set(workerTaskRoles);
+      const workerRole = workerTaskRoles.length > 0 && uniqueTaskRoles.size === 1
+        ? workerTaskRoles[0]
+        : agentType;
+      if (uniqueTaskRoles.size > 1) {
+        console.log(`[omx:scaling] ${workerName}: mixed task roles [${[...uniqueTaskRoles].join(', ')}], falling back to ${agentType}`);
+      }
+
       // Build startup command and create tmux pane
       const extraEnv: Record<string, string> = {
         OMX_TEAM_STATE_ROOT: teamStateRoot,
         OMX_TEAM_LEADER_CWD: leaderCwd,
       };
+      const preferredReasoning = resolveAgentReasoningEffort(workerRole) ?? resolveAgentReasoningEffort(agentType);
+      const workerLaunchArgs = resolveWorkerLaunchArgsForScaling(env, agentType, preferredReasoning);
       const cmd = buildWorkerStartupCommand(
         sanitized,
         workerIndex,
@@ -253,16 +267,6 @@ export async function scaleUp(
 
       // Get PID
       const panePid = getWorkerPanePid(sessionName, workerIndex, paneId);
-
-      // Resolve per-worker role from assigned task roles
-      const workerTaskRoles = tasks.filter(t => t.owner === workerName).map(t => t.role).filter(Boolean) as string[];
-      const uniqueTaskRoles = new Set(workerTaskRoles);
-      const workerRole = workerTaskRoles.length > 0 && uniqueTaskRoles.size === 1
-        ? workerTaskRoles[0]
-        : agentType;
-      if (uniqueTaskRoles.size > 1) {
-        console.log(`[omx:scaling] ${workerName}: mixed task roles [${[...uniqueTaskRoles].join(', ')}], falling back to ${agentType}`);
-      }
 
       const workerInfo: WorkerInfo = {
         name: workerName,
@@ -610,15 +614,20 @@ function resolveWorkerReadyTimeoutMs(env: NodeJS.ProcessEnv): number {
   return 45_000;
 }
 
-function resolveWorkerLaunchArgsForScaling(env: NodeJS.ProcessEnv, agentType: string): string[] {
+function resolveWorkerLaunchArgsForScaling(
+  env: NodeJS.ProcessEnv,
+  agentType: string,
+  preferredReasoning?: TeamReasoningEffort,
+): string[] {
   const inheritedArgs: string[] = [];
   const fallbackModel = isLowComplexityAgentType(agentType)
-    ? TEAM_LOW_COMPLEXITY_DEFAULT_MODEL
+    ? resolveTeamLowComplexityDefaultModel(env.CODEX_HOME)
     : undefined;
 
   return resolveTeamWorkerLaunchArgs({
     existingRaw: env.OMX_TEAM_WORKER_LAUNCH_ARGS,
     inheritedArgs,
     fallbackModel,
+    preferredReasoning,
   });
 }

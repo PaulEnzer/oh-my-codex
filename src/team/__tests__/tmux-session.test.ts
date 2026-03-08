@@ -663,6 +663,27 @@ describe('buildWorkerStartupCommand', () => {
     }
   });
 
+  it('supports worker-specific reasoning overrides for codex and strips them for claude workers', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/bin/bash';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const codexCmd = buildWorkerStartupCommand('alpha', 1, ['-c', 'model_reasoning_effort="low"'], process.cwd(), {}, 'codex');
+      const claudeCmd = buildWorkerStartupCommand('alpha', 2, ['-c', 'model_reasoning_effort="high"'], process.cwd(), {}, 'claude');
+      assert.match(codexCmd, /exec .*codex/);
+      assert.match(codexCmd, /'model_reasoning_effort="low"'/);
+      assert.match(claudeCmd, /exec .*claude/);
+      assert.equal((claudeCmd.match(/--dangerously-skip-permissions/g) || []).length, 1);
+      assert.doesNotMatch(claudeCmd, /model_reasoning_effort/);
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
   it('injects model_instructions_file override by default', () => {
     const prevShell = process.env.SHELL;
     process.env.SHELL = '/bin/bash';
