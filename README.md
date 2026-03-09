@@ -138,7 +138,7 @@ OMX installs and wires these layers:
 User
   -> Codex CLI
     -> AGENTS.md (orchestration brain)
-    -> ~/.codex/prompts/*.md (agent prompt catalog)
+    -> ~/.codex/prompts/*.md (installable active/internal agent prompt catalog)
     -> ~/.agents/skills/*/SKILL.md (skill catalog)
     -> ~/.codex/config.toml (features, notify, MCP)
     -> .omx/ (runtime state, memory, plans, logs)
@@ -483,6 +483,10 @@ npm test
 ## Acknowledgments
 
 Inspired by [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode), adapted for Codex CLI.
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Yeachan-Heo/oh-my-codex&type=Date)](https://www.star-history.com/#Yeachan-Heo/oh-my-codex&Date)
 
 ## License
 
