@@ -14,6 +14,7 @@ import { readFile, writeFile } from "fs/promises";
 import { existsSync } from "fs";
 import { join } from "path";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
+import { tryReadCatalogManifest } from "../catalog/reader.js";
 import { omxAgentsConfigDir } from "../utils/paths.js";
 
 interface MergeOptions {
@@ -382,13 +383,29 @@ export function stripExistingOmxBlocks(config: string): {
  * Generate [agents.<name>] entries for Codex native multi-agent support.
  * Each agent gets a description and config_file pointing to ~/.omx/agents/<name>.toml
  */
+
+function getInstallableAgentEntries(): Array<[string, (typeof AGENT_DEFINITIONS)[string]]> {
+  const manifest = tryReadCatalogManifest();
+  if (!manifest) {
+    return Object.entries(AGENT_DEFINITIONS);
+  }
+
+  const installable = new Set(
+    manifest.agents
+      .filter((agent) => agent.status === "active" || agent.status === "internal")
+      .map((agent) => agent.name),
+  );
+
+  return Object.entries(AGENT_DEFINITIONS).filter(([name]) => installable.has(name));
+}
+
 function getAgentEntries(agentsConfigDir: string): string[] {
   const entries: string[] = [
     "",
     "# OMX Native Agent Roles (Codex multi-agent)",
   ];
 
-  for (const [name, agent] of Object.entries(AGENT_DEFINITIONS)) {
+  for (const [name, agent] of getInstallableAgentEntries()) {
     // TOML table headers with special chars need quoting
     const tableKey = name.includes("-") ? `agents."${name}"` : `agents.${name}`;
     const configFile = escapeTomlString(join(agentsConfigDir, `${name}.toml`));

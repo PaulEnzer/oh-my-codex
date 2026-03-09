@@ -453,4 +453,22 @@ describe("config generator idempotency (#384)", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it("writes only installable catalog agents into the OMX agent block", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      await mergeConfig(configPath, wd);
+      const toml = await readFile(configPath, "utf-8");
+
+      assert.match(toml, /^\[agents\.executor\]$/m, "active agent kept");
+      assert.match(toml, /^\[agents\."code-simplifier"\]$/m, "internal agent kept");
+      assert.doesNotMatch(toml, /^\[agents\."style-reviewer"\]$/m, "merged agent omitted");
+      assert.doesNotMatch(toml, /^\[agents\."quality-reviewer"\]$/m, "merged agent omitted");
+      assert.doesNotMatch(toml, /^\[agents\."product-manager"\]$/m, "merged product agent omitted");
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 });
