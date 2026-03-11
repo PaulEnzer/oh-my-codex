@@ -23,6 +23,7 @@ describe('omx session help', () => {
     try {
       const mainHelp = runOmx(cwd, ['--help']);
       assert.equal(mainHelp.status, 0, mainHelp.stderr || mainHelp.stdout);
+      assert.match(mainHelp.stdout, /omx resume\s+Resume a previous interactive Codex session/i);
       assert.match(mainHelp.stdout, /omx session\s+Search prior local session transcripts/i);
 
       const sessionHelp = runOmx(cwd, ['session', '--help']);

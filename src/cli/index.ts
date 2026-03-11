@@ -95,6 +95,7 @@ Usage:
   omx doctor    Check installation health
   omx doctor --team  Check team/swarm runtime health diagnostics
   omx ask       Ask local provider CLI (claude|gemini) and write artifact output
+  omx resume    Resume a previous interactive Codex session
   omx session   Search prior local session transcripts and history artifacts
   omx agents-init [path]
                 Bootstrap lightweight AGENTS.md files for a repo/subtree
@@ -400,7 +401,7 @@ export function buildHudPaneCleanupTargets(existingPaneIds: string[], createdPan
 
 export async function main(args: string[]): Promise<void> {
   const knownCommands = new Set([
-    'launch', 'setup', 'agents-init', 'deepinit', 'uninstall', 'doctor', 'ask', 'team', 'ralph', 'session', 'version', 'tmux-hook', 'hooks', 'hud', 'status', 'cancel', 'help', '--help', '-h',
+    'launch', 'setup', 'agents-init', 'deepinit', 'uninstall', 'doctor', 'ask', 'team', 'ralph', 'session', 'resume', 'version', 'tmux-hook', 'hooks', 'hud', 'status', 'cancel', 'help', '--help', '-h',
   ]);
   const firstArg = args[0];
   const { command, launchArgs } = resolveCliInvocation(args);
@@ -413,7 +414,7 @@ export async function main(args: string[]): Promise<void> {
     team: flags.has('--team'),
   };
 
-  if (flags.has('--help') && !ralphHelpRequested && !new Set(['team', 'session', 'agents-init', 'deepinit']).has(command)) {
+  if (flags.has('--help') && !ralphHelpRequested && !new Set(['team', 'session', 'agents-init', 'deepinit', 'resume']).has(command)) {
     console.log(HELP);
     return;
   }
@@ -422,6 +423,9 @@ export async function main(args: string[]): Promise<void> {
     switch (command) {
       case 'launch':
         await launchWithHud(launchArgs);
+        break;
+      case 'resume':
+        await launchWithHud(['resume', ...launchArgs]);
         break;
       case 'setup':
         await setup({
