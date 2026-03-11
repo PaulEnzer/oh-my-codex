@@ -34,7 +34,6 @@
   },
   "files": [
     "bin/",
-    "dist/",
     "agents/",
     "skills/",
     "prompts/",
