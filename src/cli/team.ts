@@ -3,7 +3,7 @@ import { monitorTeam, resumeTeam, shutdownTeam, startTeam, type TeamRuntime, typ
 import { DEFAULT_MAX_WORKERS } from '../team/state.js';
 import { sanitizeTeamName } from '../team/tmux-session.js';
 import { readTeamEvents, waitForTeamEvent } from '../team/state/events.js';
-import type { TeamEvent, WorkerStatus } from '../team/state.js';
+import type { TeamEvent, WorkerInfo, WorkerStatus } from '../team/state.js';
 import { parseWorktreeMode, type WorktreeMode } from '../team/worktree.js';
 import { classifyTaskSize } from '../hooks/task-size-detector.js';
 import { routeTaskToRole } from '../team/role-router.js';
@@ -19,6 +19,8 @@ import {
   type TeamApiOperation,
 } from '../team/api-interop.js';
 import { teamReadConfig as readTeamConfig } from '../team/team-ops.js';
+
+type TeamWorkerCli = Exclude<WorkerInfo['worker_cli'], undefined>;
 
 interface TeamCliOptions {
   verbose?: boolean;
@@ -329,6 +331,7 @@ function readTeamPaneStatus(
   sparkshell_commands: Record<string, string>;
   recommended_inspect_targets: string[];
   recommended_inspect_reasons: Record<string, string>;
+  recommended_inspect_clis: Record<string, TeamWorkerCli | null>;
   recommended_inspect_roles: Record<string, string | null>;
   recommended_inspect_states: Record<string, WorkerStatus['state'] | null>;
   recommended_inspect_tasks: Record<string, string | null>;
@@ -339,6 +342,7 @@ function readTeamPaneStatus(
   recommended_inspect_items: Array<{
     target: string;
     pane_id: string;
+    worker_cli: TeamWorkerCli | null;
     role: string | null;
     reason: string;
     state: WorkerStatus['state'] | null;
@@ -356,6 +360,7 @@ function readTeamPaneStatus(
       sparkshell_commands: {},
       recommended_inspect_targets: [],
       recommended_inspect_reasons: {},
+      recommended_inspect_clis: {},
       recommended_inspect_roles: {},
       recommended_inspect_states: {},
       recommended_inspect_tasks: {},
@@ -402,6 +407,12 @@ function readTeamPaneStatus(
       (snapshot?.deadWorkers ?? []).includes(target) ? 'dead_worker' : 'non_reporting_worker',
     ]),
   );
+  const recommendedInspectClis = Object.fromEntries(
+    recommendedInspectTargets.map((target) => {
+      const worker = config.workers.find((candidate) => candidate.name === target);
+      return [target, worker?.worker_cli ?? null];
+    }),
+  );
   const recommendedInspectRoles = Object.fromEntries(
     recommendedInspectTargets.map((target) => {
       const worker = config.workers.find((candidate) => candidate.name === target);
@@ -444,6 +455,7 @@ function readTeamPaneStatus(
       return {
         target,
         pane_id: paneId,
+        worker_cli: recommendedInspectClis[target] ?? null,
         role: recommendedInspectRoles[target] ?? null,
         reason: recommendedInspectReasons[target] ?? 'unknown',
         state: recommendedInspectStates[target] ?? null,
@@ -455,6 +467,7 @@ function readTeamPaneStatus(
     .filter((item): item is {
       target: string;
       pane_id: string;
+      worker_cli: TeamWorkerCli | null;
       role: string | null;
       reason: string;
       state: WorkerStatus['state'] | null;
@@ -473,6 +486,7 @@ function readTeamPaneStatus(
     sparkshell_commands: sparkshellCommands,
     recommended_inspect_targets: recommendedInspectTargets,
     recommended_inspect_reasons: recommendedInspectReasons,
+    recommended_inspect_clis: recommendedInspectClis,
     recommended_inspect_roles: recommendedInspectRoles,
     recommended_inspect_states: recommendedInspectStates,
     recommended_inspect_tasks: recommendedInspectTasks,
@@ -505,6 +519,11 @@ function renderTeamPaneStatus(
   }
   for (const [target, reason] of Object.entries(paneStatus.recommended_inspect_reasons)) {
     console.log(`inspect_reason_${target}: ${reason}`);
+  }
+  for (const [target, workerCli] of Object.entries(paneStatus.recommended_inspect_clis)) {
+    if (workerCli) {
+      console.log(`inspect_cli_${target}: ${workerCli}`);
+    }
   }
   for (const [target, role] of Object.entries(paneStatus.recommended_inspect_roles)) {
     if (role) {
@@ -539,11 +558,12 @@ function renderTeamPaneStatus(
   }
   for (const [index, item] of paneStatus.recommended_inspect_items.entries()) {
     const panePart = item.pane_id ? ` pane=${item.pane_id}` : '';
+    const cliPart = item.worker_cli ? ` cli=${item.worker_cli}` : '';
     const rolePart = item.role ? ` role=${item.role}` : '';
     const statePart = item.state ? ` state=${item.state}` : '';
     const taskPart = item.task_id ? ` task=${item.task_id}` : '';
     const subjectPart = item.task_subject ? ` subject=${item.task_subject}` : '';
-    console.log(`inspect_item_${index + 1}: target=${item.target}${panePart}${rolePart} reason=${item.reason}${statePart}${taskPart}${subjectPart} command=${item.command}`);
+    console.log(`inspect_item_${index + 1}: target=${item.target}${panePart}${cliPart}${rolePart} reason=${item.reason}${statePart}${taskPart}${subjectPart} command=${item.command}`);
   }
 
   for (const [target, command] of Object.entries(paneStatus.sparkshell_commands)) {
