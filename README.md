@@ -280,7 +280,7 @@ See `docs/hooks-extension.md` for the full extension workflow and event model.
 
 ## Sparkshell (preview)
 
-`omx sparkshell <command> [args...]` is a planned JS -> Rust sidecar command for fast command execution with adaptive summaries when output exceeds `OMX_SPARKSHELL_LINES`.
+`omx sparkshell <command> [args...]` runs through a JS -> Rust sidecar bridge for fast command execution with adaptive summaries when output exceeds `OMX_SPARKSHELL_LINES`.
 
 Current preview contract:
 - Short output stays raw; long output is summarized into markdown sections limited to `summary:`, `failures:`, and `warnings:`.
