@@ -750,6 +750,7 @@ export function createTeamSession(
 
   const safeTeamName = sanitizeTeamName(teamName);
   let registeredResizeHook: { name: string; target: string } | null = null;
+  let registeredClientAttachedHook: { name: string; target: string } | null = null;
   const rollbackPaneIds: string[] = [];
   try {
     const tmuxPaneTarget = process.env.TMUX_PANE;
@@ -862,6 +863,22 @@ export function createTeamSession(
           }
           registeredResizeHook = { name: resizeHookName, target: resizeHookTarget };
 
+          const clientAttachedHookName = buildClientAttachedReconcileHookName(
+            safeTeamName,
+            sessionName,
+            windowIndex,
+            hudPaneId,
+          );
+          const registerClientAttachedHook = runTmux(
+            buildRegisterClientAttachedReconcileArgs(resizeHookTarget, clientAttachedHookName, hudPaneId),
+          );
+          if (!registerClientAttachedHook.ok) {
+            throw new Error(
+              `failed to register client-attached reconcile hook ${clientAttachedHookName}: ${registerClientAttachedHook.stderr}`,
+            );
+          }
+          registeredClientAttachedHook = { name: clientAttachedHookName, target: resizeHookTarget };
+
           const delayed = runTmux(buildScheduleDelayedHudResizeArgs(hudPaneId));
           if (!delayed.ok) {
             throw new Error(`failed to schedule delayed HUD resize: ${delayed.stderr}`);
@@ -896,6 +913,14 @@ export function createTeamSession(
       resizeHookTarget,
     };
   } catch (error) {
+    if (registeredClientAttachedHook) {
+      runTmux(
+        buildUnregisterClientAttachedReconcileArgs(
+          registeredClientAttachedHook.target,
+          registeredClientAttachedHook.name,
+        ),
+      );
+    }
     if (registeredResizeHook) {
       runTmux(buildUnregisterResizeHookArgs(registeredResizeHook.target, registeredResizeHook.name));
     }
