@@ -648,6 +648,7 @@ describe('teamCommand status', () => {
       const output = logs.join('\n');
       assert.match(output, /dead_workers: worker-1 worker-2/);
       assert.match(output, /recommended_inspect_targets: worker-1 worker-2/);
+      assert.match(output, /inspect_next: omx sparkshell --tmux-pane %21 --tail-lines 400/);
       assert.match(output, /panes: leader=%10 hud=%11/);
       assert.match(output, /worker_panes: worker-1=%21 worker-2=%22/);
       assert.match(output, /sparkshell_hint: omx sparkshell --tmux-pane <pane-id> --tail-lines 400/);
@@ -712,6 +713,7 @@ describe('teamCommand status', () => {
           sparkshell_hint?: string | null;
           sparkshell_commands?: Record<string, string>;
           recommended_inspect_targets?: string[];
+          recommended_inspect_command?: string | null;
         };
       };
       assert.equal(payload.schema_version, '1.0');
@@ -722,6 +724,7 @@ describe('teamCommand status', () => {
       assert.deepEqual(payload.dead_workers, ['worker-1']);
       assert.deepEqual(payload.non_reporting_workers, []);
       assert.deepEqual(payload.panes?.recommended_inspect_targets, ['worker-1']);
+      assert.equal(payload.panes?.recommended_inspect_command, 'omx sparkshell --tmux-pane %41 --tail-lines 400');
       assert.equal(payload.panes?.leader_pane_id, '%30');
       assert.equal(payload.panes?.hud_pane_id, '%31');
       assert.deepEqual(payload.panes?.worker_panes, { 'worker-1': '%41' });
