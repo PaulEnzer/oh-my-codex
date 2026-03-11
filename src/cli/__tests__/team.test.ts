@@ -621,6 +621,16 @@ describe('teamCommand status', () => {
       config.hud_pane_id = '%11';
       config.workers[0]!.pane_id = '%21';
       config.workers[1]!.pane_id = '%22';
+      await writeWorkerStatus('pane-team', 'worker-1', {
+        state: 'working',
+        current_task_id: '7',
+        updated_at: '2026-03-11T00:00:00.000Z',
+      }, wd);
+      await writeWorkerStatus('pane-team', 'worker-2', {
+        state: 'blocked',
+        current_task_id: '9',
+        updated_at: '2026-03-11T00:00:00.000Z',
+      }, wd);
       const manifestPath = join(wd, '.omx', 'state', 'team', 'pane-team', 'manifest.v2.json');
       const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
         leader_pane_id?: string | null;
@@ -650,6 +660,8 @@ describe('teamCommand status', () => {
       assert.match(output, /recommended_inspect_targets: worker-1 worker-2/);
       assert.match(output, /inspect_reason_worker-1: dead_worker/);
       assert.match(output, /inspect_reason_worker-2: dead_worker/);
+      assert.match(output, /inspect_task_worker-1: 7/);
+      assert.match(output, /inspect_task_worker-2: 9/);
       assert.match(output, /inspect_next: omx sparkshell --tmux-pane %21 --tail-lines 400/);
       assert.match(output, /inspect_priority_1: omx sparkshell --tmux-pane %21 --tail-lines 400/);
       assert.match(output, /inspect_priority_2: omx sparkshell --tmux-pane %22 --tail-lines 400/);
@@ -678,6 +690,11 @@ describe('teamCommand status', () => {
       config.leader_pane_id = '%30';
       config.hud_pane_id = '%31';
       config.workers[0]!.pane_id = '%41';
+      await writeWorkerStatus('pane-json-team', 'worker-1', {
+        state: 'working',
+        current_task_id: '11',
+        updated_at: '2026-03-11T00:00:00.000Z',
+      }, wd);
       const manifestPath = join(wd, '.omx', 'state', 'team', 'pane-json-team', 'manifest.v2.json');
       const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
         leader_pane_id?: string | null;
@@ -718,6 +735,7 @@ describe('teamCommand status', () => {
           sparkshell_commands?: Record<string, string>;
           recommended_inspect_targets?: string[];
           recommended_inspect_reasons?: Record<string, string>;
+          recommended_inspect_tasks?: Record<string, string | null>;
           recommended_inspect_command?: string | null;
           recommended_inspect_commands?: string[];
         };
@@ -731,6 +749,7 @@ describe('teamCommand status', () => {
       assert.deepEqual(payload.non_reporting_workers, []);
       assert.deepEqual(payload.panes?.recommended_inspect_targets, ['worker-1']);
       assert.deepEqual(payload.panes?.recommended_inspect_reasons, { 'worker-1': 'dead_worker' });
+      assert.deepEqual(payload.panes?.recommended_inspect_tasks, { 'worker-1': '11' });
       assert.equal(payload.panes?.recommended_inspect_command, 'omx sparkshell --tmux-pane %41 --tail-lines 400');
       assert.deepEqual(payload.panes?.recommended_inspect_commands, ['omx sparkshell --tmux-pane %41 --tail-lines 400']);
       assert.equal(payload.panes?.leader_pane_id, '%30');

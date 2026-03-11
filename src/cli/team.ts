@@ -319,7 +319,7 @@ function buildDeadWorkerAwaitEvent(teamName: string, snapshot: TeamSnapshot): Te
 
 function readTeamPaneStatus(
   config: Awaited<ReturnType<typeof readTeamConfig>>,
-  snapshot?: Pick<TeamSnapshot, 'deadWorkers' | 'nonReportingWorkers'>,
+  snapshot?: Pick<TeamSnapshot, 'deadWorkers' | 'nonReportingWorkers' | 'workers'>,
   tailLines: number = DEFAULT_SPARKSHELL_TAIL_LINES,
 ): {
   leader_pane_id: string | null;
@@ -329,6 +329,7 @@ function readTeamPaneStatus(
   sparkshell_commands: Record<string, string>;
   recommended_inspect_targets: string[];
   recommended_inspect_reasons: Record<string, string>;
+  recommended_inspect_tasks: Record<string, string | null>;
   recommended_inspect_command: string | null;
   recommended_inspect_commands: string[];
 } {
@@ -341,6 +342,7 @@ function readTeamPaneStatus(
       sparkshell_commands: {},
       recommended_inspect_targets: [],
       recommended_inspect_reasons: {},
+      recommended_inspect_tasks: {},
       recommended_inspect_command: null,
       recommended_inspect_commands: [],
     };
@@ -381,6 +383,12 @@ function readTeamPaneStatus(
       (snapshot?.deadWorkers ?? []).includes(target) ? 'dead_worker' : 'non_reporting_worker',
     ]),
   );
+  const recommendedInspectTasks = Object.fromEntries(
+    recommendedInspectTargets.map((target) => {
+      const worker = snapshot?.workers.find((candidate) => candidate.name === target);
+      return [target, worker?.status.current_task_id ?? null];
+    }),
+  );
   const recommendedInspectCommand = recommendedInspectTargets.length > 0
     ? sparkshellCommands[recommendedInspectTargets[0]!] ?? null
     : null;
@@ -398,6 +406,7 @@ function readTeamPaneStatus(
     sparkshell_commands: sparkshellCommands,
     recommended_inspect_targets: recommendedInspectTargets,
     recommended_inspect_reasons: recommendedInspectReasons,
+    recommended_inspect_tasks: recommendedInspectTasks,
     recommended_inspect_command: recommendedInspectCommand,
     recommended_inspect_commands: recommendedInspectCommands,
   };
@@ -424,6 +433,11 @@ function renderTeamPaneStatus(
   }
   for (const [target, reason] of Object.entries(paneStatus.recommended_inspect_reasons)) {
     console.log(`inspect_reason_${target}: ${reason}`);
+  }
+  for (const [target, taskId] of Object.entries(paneStatus.recommended_inspect_tasks)) {
+    if (taskId) {
+      console.log(`inspect_task_${target}: ${taskId}`);
+    }
   }
   if (paneStatus.recommended_inspect_command) {
     console.log(`inspect_next: ${paneStatus.recommended_inspect_command}`);
