@@ -273,7 +273,7 @@ export function buildTmuxSplitArgs(
   // Defense-in-depth: keep preset constrained even if this helper is reused.
   const safePreset = parseHudPreset(preset);
   const presetArg = safePreset ? ` --preset=${safePreset}` : '';
-  const cmd = `node ${shellEscape(omxBin)} hud --watch${presetArg}`;
+  const cmd = `${shellEscape(omxBin)} hud --watch${presetArg}`;
   return ['split-window', '-v', '-l', String(HUD_TMUX_HEIGHT_LINES), '-c', cwd, cmd];
 }
 

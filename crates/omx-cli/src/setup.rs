@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::install_paths::{InstallPaths, InstallScope, ScopeSource, resolve_install_paths};
 
@@ -251,6 +251,9 @@ fn persist_setup_scope(cwd: &Path, scope: SetupScope) -> Result<(), SetupError> 
 fn is_github_cli_configured(env: &BTreeMap<OsString, OsString>) -> bool {
     let mut command = Command::new("gh");
     command.arg("auth").arg("status");
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::null());
+    command.stderr(Stdio::null());
     command.env_clear();
     for (key, value) in env {
         command.env(key, value);

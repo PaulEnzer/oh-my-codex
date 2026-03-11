@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
@@ -258,9 +259,9 @@ fn resolve_ask_prompts_dir(cwd: &Path, env: &BTreeMap<OsString, OsString>) -> Pa
     }
 
     let scope_path = cwd.join(".omx").join("setup-scope.json");
-    if let Ok(raw) = std::fs::read_to_string(&scope_path)
+    if let Ok(raw) = fs::read_to_string(&scope_path)
         && matches!(
-            crate::install_paths::extract_json_string_field(&raw, "scope").as_deref(),
+            extract_json_string_field(&raw, "scope").as_deref(),
             Some("project" | "project-local")
         )
     {
@@ -270,8 +271,7 @@ fn resolve_ask_prompts_dir(cwd: &Path, env: &BTreeMap<OsString, OsString>) -> Pa
     let home = env
         .get(OsStr::new("HOME"))
         .or_else(|| env.get(OsStr::new("USERPROFILE")))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| cwd.to_path_buf());
+        .map_or_else(|| cwd.to_path_buf(), PathBuf::from);
     home.join(".codex").join("prompts")
 }
 
@@ -300,7 +300,7 @@ fn resolve_agent_prompt_content(role: &str, prompts_dir: &Path) -> Result<String
 
     let prompt_path = prompts_dir.join(format!("{normalized}.md"));
     if !prompt_path.is_file() {
-        let mut available_roles = std::fs::read_dir(prompts_dir)
+        let mut available_roles = fs::read_dir(prompts_dir)
             .ok()
             .into_iter()
             .flat_map(|entries| entries.filter_map(Result::ok))
@@ -325,7 +325,7 @@ fn resolve_agent_prompt_content(role: &str, prompts_dir: &Path) -> Result<String
         )));
     }
 
-    let content = std::fs::read_to_string(&prompt_path).map_err(|error| {
+    let content = fs::read_to_string(&prompt_path).map_err(|error| {
         AskError::runtime(format!(
             "[ask] failed to read agent prompt {}: {error}",
             prompt_path.display()
@@ -381,6 +381,34 @@ fn find_package_root(start: &Path) -> Option<PathBuf> {
         .ancestors()
         .find(|candidate| candidate.join("package.json").is_file())
         .map(Path::to_path_buf)
+}
+
+fn extract_json_string_field(raw: &str, key: &str) -> Option<String> {
+    let key = format!("\"{key}\"");
+    let key_start = raw.find(&key)? + key.len();
+    let after_key = raw.get(key_start..)?;
+    let colon_idx = after_key.find(':')?;
+    let after_colon = after_key.get(colon_idx + 1..)?.trim_start();
+    let stripped = after_colon.strip_prefix('"')?;
+
+    let mut escaped = false;
+    let mut out = String::new();
+    for ch in stripped.chars() {
+        if escaped {
+            out.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            return Some(out);
+        }
+        out.push(ch);
+    }
+    None
 }
 
 fn exit_code_from_status(status: ExitStatus) -> i32 {

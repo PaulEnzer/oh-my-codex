@@ -479,8 +479,8 @@ describe('tmux HUD pane helpers', () => {
     const panes = parseTmuxPaneSnapshot(
       [
         '%1\tzsh\tzsh',
-        '%2\tnode\tnode /tmp/bin/omx.js hud --watch',
-        '%3\tnode\tnode /tmp/bin/omx.js hud --watch',
+        '%2\tomx\t/tmp/bin/omx hud --watch',
+        '%3\tomx\t/tmp/bin/omx hud --watch',
         '%4\tcodex\tcodex --model gpt-5',
       ].join('\n')
     );
@@ -512,7 +512,7 @@ describe('detached tmux new-session sequencing', () => {
       'omx-demo',
       '/tmp/project',
       "'codex' '--model' 'gpt-5'",
-      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      "'/tmp/omx' 'hud' '--watch'",
       '--model gpt-5',
       '/tmp/codex-home',
       '{"active":true}',
@@ -531,7 +531,7 @@ describe('detached tmux new-session sequencing', () => {
       'omx-demo',
       '/tmp/project',
       "'codex' '--model' 'gpt-5'",
-      "'node' '/tmp/omx.js' 'hud' '--watch'",
+      "'/tmp/omx' 'hud' '--watch'",
       null,
       undefined,
       '{"active":true,"canonicalSelectors":["discord"]}',
