@@ -328,6 +328,7 @@ function readTeamPaneStatus(
   sparkshell_hint: string | null;
   sparkshell_commands: Record<string, string>;
   recommended_inspect_targets: string[];
+  recommended_inspect_reasons: Record<string, string>;
   recommended_inspect_command: string | null;
   recommended_inspect_commands: string[];
 } {
@@ -339,6 +340,7 @@ function readTeamPaneStatus(
       sparkshell_hint: null,
       sparkshell_commands: {},
       recommended_inspect_targets: [],
+      recommended_inspect_reasons: {},
       recommended_inspect_command: null,
       recommended_inspect_commands: [],
     };
@@ -373,6 +375,12 @@ function readTeamPaneStatus(
   ].filter((workerName, index, values) => (
     Object.hasOwn(workerPanes, workerName) && values.indexOf(workerName) === index
   ));
+  const recommendedInspectReasons = Object.fromEntries(
+    recommendedInspectTargets.map((target) => [
+      target,
+      (snapshot?.deadWorkers ?? []).includes(target) ? 'dead_worker' : 'non_reporting_worker',
+    ]),
+  );
   const recommendedInspectCommand = recommendedInspectTargets.length > 0
     ? sparkshellCommands[recommendedInspectTargets[0]!] ?? null
     : null;
@@ -389,6 +397,7 @@ function readTeamPaneStatus(
       : null,
     sparkshell_commands: sparkshellCommands,
     recommended_inspect_targets: recommendedInspectTargets,
+    recommended_inspect_reasons: recommendedInspectReasons,
     recommended_inspect_command: recommendedInspectCommand,
     recommended_inspect_commands: recommendedInspectCommands,
   };
@@ -412,6 +421,9 @@ function renderTeamPaneStatus(
 
   if (paneStatus.recommended_inspect_targets.length > 0) {
     console.log(`recommended_inspect_targets: ${paneStatus.recommended_inspect_targets.join(' ')}`);
+  }
+  for (const [target, reason] of Object.entries(paneStatus.recommended_inspect_reasons)) {
+    console.log(`inspect_reason_${target}: ${reason}`);
   }
   if (paneStatus.recommended_inspect_command) {
     console.log(`inspect_next: ${paneStatus.recommended_inspect_command}`);
