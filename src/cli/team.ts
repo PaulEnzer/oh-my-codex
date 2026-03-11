@@ -332,10 +332,12 @@ function readTeamPaneStatus(
   recommended_inspect_states: Record<string, WorkerStatus['state'] | null>;
   recommended_inspect_tasks: Record<string, string | null>;
   recommended_inspect_subjects: Record<string, string | null>;
+  recommended_inspect_panes: Record<string, string | null>;
   recommended_inspect_command: string | null;
   recommended_inspect_commands: string[];
   recommended_inspect_items: Array<{
     target: string;
+    pane_id: string;
     reason: string;
     state: WorkerStatus['state'] | null;
     task_id: string | null;
@@ -355,6 +357,7 @@ function readTeamPaneStatus(
       recommended_inspect_states: {},
       recommended_inspect_tasks: {},
       recommended_inspect_subjects: {},
+      recommended_inspect_panes: {},
       recommended_inspect_command: null,
       recommended_inspect_commands: [],
       recommended_inspect_items: [],
@@ -402,6 +405,9 @@ function readTeamPaneStatus(
       return [target, worker?.status.current_task_id ?? null];
     }),
   );
+  const recommendedInspectPanes = Object.fromEntries(
+    recommendedInspectTargets.map((target) => [target, workerPanes[target] ?? null]),
+  );
   const taskSubjectById = new Map((snapshot?.tasks.items ?? []).map((task) => [task.id, task.subject] as const));
   const recommendedInspectSubjects = Object.fromEntries(
     recommendedInspectTargets.map((target) => {
@@ -424,9 +430,11 @@ function readTeamPaneStatus(
   const recommendedInspectItems = recommendedInspectTargets
     .map((target) => {
       const command = sparkshellCommands[target];
-      if (!command) return null;
+      const paneId = recommendedInspectPanes[target];
+      if (!command || !paneId) return null;
       return {
         target,
+        pane_id: paneId,
         reason: recommendedInspectReasons[target] ?? 'unknown',
         state: recommendedInspectStates[target] ?? null,
         task_id: recommendedInspectTasks[target] ?? null,
@@ -436,6 +444,7 @@ function readTeamPaneStatus(
     })
     .filter((item): item is {
       target: string;
+      pane_id: string;
       reason: string;
       state: WorkerStatus['state'] | null;
       task_id: string | null;
@@ -456,6 +465,7 @@ function readTeamPaneStatus(
     recommended_inspect_states: recommendedInspectStates,
     recommended_inspect_tasks: recommendedInspectTasks,
     recommended_inspect_subjects: recommendedInspectSubjects,
+    recommended_inspect_panes: recommendedInspectPanes,
     recommended_inspect_command: recommendedInspectCommand,
     recommended_inspect_commands: recommendedInspectCommands,
     recommended_inspect_items: recommendedInspectItems,
@@ -499,6 +509,11 @@ function renderTeamPaneStatus(
       console.log(`inspect_subject_${target}: ${subject}`);
     }
   }
+  for (const [target, paneId] of Object.entries(paneStatus.recommended_inspect_panes)) {
+    if (paneId) {
+      console.log(`inspect_pane_${target}: ${paneId}`);
+    }
+  }
   if (paneStatus.recommended_inspect_command) {
     console.log(`inspect_next: ${paneStatus.recommended_inspect_command}`);
   }
@@ -506,10 +521,11 @@ function renderTeamPaneStatus(
     console.log(`inspect_priority_${index + 1}: ${command}`);
   }
   for (const [index, item] of paneStatus.recommended_inspect_items.entries()) {
+    const panePart = item.pane_id ? ` pane=${item.pane_id}` : '';
     const statePart = item.state ? ` state=${item.state}` : '';
     const taskPart = item.task_id ? ` task=${item.task_id}` : '';
     const subjectPart = item.task_subject ? ` subject=${item.task_subject}` : '';
-    console.log(`inspect_item_${index + 1}: target=${item.target} reason=${item.reason}${statePart}${taskPart}${subjectPart} command=${item.command}`);
+    console.log(`inspect_item_${index + 1}: target=${item.target}${panePart} reason=${item.reason}${statePart}${taskPart}${subjectPart} command=${item.command}`);
   }
 
   for (const [target, command] of Object.entries(paneStatus.sparkshell_commands)) {
