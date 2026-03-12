@@ -149,6 +149,23 @@ jobs:
           name: ts-full-coverage
           path: coverage/ts-full/
 
+  compat-node:
+    name: Compat Node Tests (tmux opt-in) — informational
+    runs-on: ubuntu-latest
+    needs: [test]
+    continue-on-error: true
+    env:
+      OMX_COMPAT_TMUX: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Run compat test suite with tmux opt-in
+        run: npm run test:compat:node
+
   coverage-rust:
     name: Coverage Report (Rust)
     runs-on: ubuntu-latest
