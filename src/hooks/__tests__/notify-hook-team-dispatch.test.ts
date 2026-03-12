@@ -84,15 +84,19 @@ exit 0
 }
 
 describe('notify-hook team dispatch consumer', () => {
+  const previousCompatEnv = process.env.OMX_COMPAT_TMUX;
   const previousWorkerEnv = process.env.OMX_TEAM_WORKER;
   const previousStateRootEnv = process.env.OMX_TEAM_STATE_ROOT;
 
   beforeEach(() => {
+    process.env.OMX_COMPAT_TMUX = '1';
     delete process.env.OMX_TEAM_WORKER;
     delete process.env.OMX_TEAM_STATE_ROOT;
   });
 
   afterEach(() => {
+    if (typeof previousCompatEnv === 'string') process.env.OMX_COMPAT_TMUX = previousCompatEnv;
+    else delete process.env.OMX_COMPAT_TMUX;
     if (typeof previousWorkerEnv === 'string') process.env.OMX_TEAM_WORKER = previousWorkerEnv;
     else delete process.env.OMX_TEAM_WORKER;
     if (typeof previousStateRootEnv === 'string') process.env.OMX_TEAM_STATE_ROOT = previousStateRootEnv;

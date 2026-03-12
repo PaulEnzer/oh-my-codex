@@ -433,7 +433,6 @@ async function emitLeaderNudgeDeferredEvent(cwd, teamName, reason, nowIso, { tmu
 }
 
 export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputedLeaderStale }) {
-  // Compatibility fence: require explicit opt-in for any tmux-backed leader nudge.
   const compat = String(process.env.OMX_COMPAT_TMUX || '').toLowerCase();
   const compatEnabled = compat === '1' || compat === 'true' || compat === 'yes';
   if (!compatEnabled || process.env.OMX_NO_TMUX === '1') {

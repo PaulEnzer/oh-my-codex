@@ -62,6 +62,7 @@ function runNotifyHookAsWorker(
     env: {
       ...process.env,
       PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+      OMX_COMPAT_TMUX: '1',
       OMX_TEAM_WORKER: workerEnv,
       OMX_TEAM_WORKER_IDLE_NOTIFY: 'false',
       OMX_TEAM_ALL_IDLE_COOLDOWN_MS: '500', // short cooldown for tests

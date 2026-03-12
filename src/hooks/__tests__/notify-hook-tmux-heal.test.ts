@@ -109,6 +109,7 @@ exit 1
         env: {
           ...process.env,
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          OMX_COMPAT_TMUX: '1',
           OMX_TEAM_WORKER: '',
         },
       });
@@ -217,6 +218,7 @@ exit 1
         env: {
           ...process.env,
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          OMX_COMPAT_TMUX: '1',
           OMX_TEAM_WORKER: '',
           TMUX_PANE: '%42',
         },
@@ -330,6 +332,7 @@ exit 1
         env: {
           ...process.env,
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          OMX_COMPAT_TMUX: '1',
           OMX_TEAM_WORKER: '',
           TMUX_PANE: '%42',
         },
@@ -446,6 +449,7 @@ exit 1
         env: {
           ...process.env,
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          OMX_COMPAT_TMUX: '1',
           OMX_TEAM_WORKER: '',
         },
       });
@@ -551,6 +555,7 @@ exit 1
         env: {
           ...process.env,
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          OMX_COMPAT_TMUX: '1',
           OMX_TEAM_WORKER: '',
         },
       });
@@ -670,6 +675,7 @@ exit 1
         env: {
           ...process.env,
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          OMX_COMPAT_TMUX: '1',
           OMX_TEAM_WORKER: '',
         },
       });
@@ -776,6 +782,7 @@ exit 1
         env: {
           ...process.env,
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          OMX_COMPAT_TMUX: '1',
           OMX_TEAM_WORKER: '',
         },
       });

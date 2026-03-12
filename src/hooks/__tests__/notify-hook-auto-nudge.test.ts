@@ -81,6 +81,7 @@ function runNotifyHook(
       ...process.env,
       PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
       CODEX_HOME: codexHome,
+      OMX_COMPAT_TMUX: '1',
       TMUX_PANE: '%99',
       TMUX: '1',
       OMX_TEAM_WORKER: '',

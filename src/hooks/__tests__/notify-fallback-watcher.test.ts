@@ -394,6 +394,7 @@ describe('notify-fallback watcher', () => {
           env: {
             ...process.env,
             PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+            OMX_COMPAT_TMUX: '1',
           },
         },
       );
@@ -510,6 +511,7 @@ describe('notify-fallback watcher', () => {
       const env = {
         ...process.env,
         PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+        OMX_COMPAT_TMUX: '1',
         OMX_TEST_CAPTURE_FILE: captureFile,
       };
 
@@ -767,6 +769,7 @@ describe('notify-fallback watcher', () => {
       const env = {
         ...process.env,
         PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+        OMX_COMPAT_TMUX: '1',
         OMX_TEST_CAPTURE_SEQUENCE_FILE: captureSeqFile,
         OMX_TEST_CAPTURE_COUNTER_FILE: captureCounterFile,
       };

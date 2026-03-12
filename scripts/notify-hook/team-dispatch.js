@@ -289,7 +289,6 @@ const INJECT_VERIFY_DELAY_MS = 250;
 const INJECT_VERIFY_ROUNDS = 3;
 
 async function injectDispatchRequest(request, config, cwd) {
-  // Compatibility fence: require explicit opt-in for tmux-backed dispatch.
   const compat = String(process.env.OMX_COMPAT_TMUX || '').toLowerCase();
   const compatEnabled = compat === '1' || compat === 'true' || compat === 'yes';
   if (!compatEnabled || process.env.OMX_NO_TMUX === '1') {

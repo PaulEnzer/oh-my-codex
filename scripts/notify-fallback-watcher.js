@@ -196,7 +196,6 @@ async function resolveActiveRalphState() {
 }
 
 async function emitRalphContinueSteer(paneId, message) {
-  // Respect compat gating: require explicit opt-in for tmux flows
   const compat = String(process.env.OMX_COMPAT_TMUX || '').toLowerCase();
   const compatEnabled = compat === '1' || compat === 'true' || compat === 'yes';
   if (!compatEnabled || process.env.OMX_NO_TMUX === '1') {
@@ -223,7 +222,6 @@ async function emitRalphContinueSteer(paneId, message) {
 async function runRalphContinueSteerTick() {
   const now = Date.now();
   const nowIso = new Date(now).toISOString();
-  // Compat env gate: default-off for tmux flows unless explicitly enabled
   const compat = String(process.env.OMX_COMPAT_TMUX || '').toLowerCase();
   const compatEnabled = compat === '1' || compat === 'true' || compat === 'yes';
   if (!compatEnabled || process.env.OMX_NO_TMUX === '1') {

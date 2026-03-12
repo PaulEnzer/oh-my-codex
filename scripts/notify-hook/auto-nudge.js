@@ -314,8 +314,6 @@ async function emitInjectionMessage(paneId, message) {
 }
 
 export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {
-  // Compatibility fence: tmux auto-nudge is disabled by default. Require
-  // explicit opt-in via OMX_COMPAT_TMUX and honor OMX_NO_TMUX=1 to force-disable.
   const compat = String(process.env.OMX_COMPAT_TMUX || '').toLowerCase();
   const compatEnabled = compat === '1' || compat === 'true' || compat === 'yes';
   if (!compatEnabled || process.env.OMX_NO_TMUX === '1') {

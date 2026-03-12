@@ -167,10 +167,6 @@ export async function handleTmuxInjection({
   stateDir,
   logsDir,
 }) {
-  // Compat fence: tmux injection is disabled by default for the cargo/native-first
-  // milestone. Require explicit opt-in via OMX_COMPAT_TMUX (or allow explicit
-  // opt-out via OMX_NO_TMUX). This keeps tmux behavior strictly compatibility-only
-  // and prevents accidental product-authoritative use.
   const compatFlag = String(process.env.OMX_COMPAT_TMUX || '').toLowerCase();
   const compatEnabled = compatFlag === '1' || compatFlag === 'true' || compatFlag === 'yes';
   if (!compatEnabled || process.env.OMX_NO_TMUX === '1') {
