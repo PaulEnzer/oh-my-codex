@@ -1008,7 +1008,7 @@ function teamManifestFromConfig(config: TeamConfig): TeamManifestV2 {
     task: normalized.task,
     leader: defaultLeader(),
     policy,
-    governance: defaultGovernance(),
+    governance: normalizeTeamGovernance(undefined, policy as LegacyGovernanceFields),
     permissions_snapshot: defaultPermissionsSnapshot(),
     runtime_session_id: normalized.runtime_session_id,
     tmux_session: normalized.tmux_session,
