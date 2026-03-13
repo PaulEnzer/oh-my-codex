@@ -10,11 +10,17 @@ import type {
   ClaimTaskResult,
   TransitionTaskResult,
   ReleaseTaskClaimResult,
+  ReclaimTaskResult,
   TeamMonitorSnapshotState,
 } from './types.js';
 
 interface TaskReadDeps {
   readTask: (teamName: string, taskId: string, cwd: string) => Promise<TeamTask | null>;
+}
+
+function isClaimLeaseExpired(claim: TeamTask['claim'] | undefined | null, now: Date = new Date()): boolean {
+  if (!claim?.leased_until) return false;
+  return new Date(claim.leased_until) <= now;
 }
 
 export async function computeTaskReadiness(
@@ -73,11 +79,20 @@ export async function claimTask(
     if (!readinessAfterLock.ready) return { ok: false as const, error: 'blocked_dependency' as const, dependencies: readinessAfterLock.dependencies };
 
     if (deps.isTerminalTaskStatus(v.status)) return { ok: false as const, error: 'already_terminal' as const };
-    if (v.status === 'in_progress') return { ok: false as const, error: 'claim_conflict' as const };
+    if (v.status === 'in_progress') {
+      if (!isClaimLeaseExpired(v.claim)) return { ok: false as const, error: 'claim_conflict' as const };
+      v.owner = undefined;
+      v.claim = undefined;
+      v.status = 'pending';
+    }
 
     if (v.status === 'pending' || v.status === 'blocked') {
-      if (v.claim) return { ok: false as const, error: 'claim_conflict' as const };
-      if (v.owner && v.owner !== workerName) return { ok: false as const, error: 'claim_conflict' as const };
+      if (v.claim) {
+        if (!isClaimLeaseExpired(v.claim)) return { ok: false as const, error: 'claim_conflict' as const };
+        v.claim = undefined;
+      }
+      if (v.owner && v.owner != workerName) return { ok: false as const, error: 'claim_conflict' as const };
+      if (v.owner === workerName || !v.owner) v.owner = undefined;
     }
 
     const claimToken = randomUUID();
@@ -119,6 +134,7 @@ export async function transitionTaskStatus(
   from: TeamTaskStatus,
   to: TeamTaskStatus,
   claimToken: string,
+  terminalData: { result?: string; error?: string } | undefined,
   deps: TransitionDeps,
 ): Promise<TransitionTaskResult> {
   if (!deps.canTransitionTaskStatus(from, to)) return { ok: false, error: 'invalid_transition' };
@@ -137,10 +153,14 @@ export async function transitionTaskStatus(
     }
     if (new Date(v.claim.leased_until) <= new Date()) return { ok: false as const, error: 'lease_expired' as const };
 
+    const normalizedResult = typeof terminalData?.result === 'string' ? terminalData.result : undefined;
+    const normalizedError = typeof terminalData?.error === 'string' ? terminalData.error : undefined;
     const updated: TeamTaskV2 = {
       ...v,
       status: to,
       completed_at: new Date().toISOString(),
+      result: to === 'completed' ? normalizedResult : undefined,
+      error: to === 'failed' ? normalizedError : undefined,
       claim: undefined,
       version: v.version + 1,
     };
@@ -214,6 +234,35 @@ export async function releaseTaskClaim(
     };
     await deps.writeAtomic(deps.taskFilePath(deps.teamName, taskId, deps.cwd), JSON.stringify(updated, null, 2));
     return { ok: true as const, task: updated };
+  });
+
+  if (!lock.ok) return { ok: false, error: 'claim_conflict' };
+  return lock.value;
+}
+
+
+export async function reclaimExpiredTaskClaim(
+  taskId: string,
+  deps: ReleaseDeps,
+): Promise<ReclaimTaskResult> {
+  const lock = await deps.withTaskClaimLock(deps.teamName, taskId, deps.cwd, async () => {
+    const current = await deps.readTask(deps.teamName, taskId, deps.cwd);
+    if (!current) return { ok: false as const, error: 'task_not_found' as const };
+
+    const v = deps.normalizeTask(current);
+    if (v.status === 'completed' || v.status === 'failed') return { ok: false as const, error: 'already_terminal' as const };
+    if (v.status !== 'in_progress' || !v.claim) return { ok: true as const, task: v, reclaimed: false };
+    if (!isClaimLeaseExpired(v.claim)) return { ok: false as const, error: 'lease_active' as const };
+
+    const updated: TeamTaskV2 = {
+      ...v,
+      status: 'pending',
+      owner: undefined,
+      claim: undefined,
+      version: v.version + 1,
+    };
+    await deps.writeAtomic(deps.taskFilePath(deps.teamName, taskId, deps.cwd), JSON.stringify(updated, null, 2));
+    return { ok: true as const, task: updated, reclaimed: true };
   });
 
   if (!lock.ok) return { ok: false, error: 'claim_conflict' };

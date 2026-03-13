@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -84,6 +84,28 @@ exit 0
 }
 
 describe('notify-hook team dispatch consumer', () => {
+  const originalTeamWorker = process.env.OMX_TEAM_WORKER;
+  const originalTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+
+  before(() => {
+    delete process.env.OMX_TEAM_WORKER;
+    delete process.env.OMX_TEAM_STATE_ROOT;
+  });
+
+  after(() => {
+    if (originalTeamWorker === undefined) {
+      delete process.env.OMX_TEAM_WORKER;
+    } else {
+      process.env.OMX_TEAM_WORKER = originalTeamWorker;
+    }
+
+    if (originalTeamStateRoot === undefined) {
+      delete process.env.OMX_TEAM_STATE_ROOT;
+    } else {
+      process.env.OMX_TEAM_STATE_ROOT = originalTeamStateRoot;
+    }
+  });
+
   it('marks pending request as notified and preserves mailbox notified_at semantics', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
     try {
@@ -159,6 +181,54 @@ describe('notify-hook team dispatch consumer', () => {
         && event.request_id === queued.request.request_id
         && event.to_worker === 'leader-fixed');
       assert.ok(deferred, 'expected leader_notification_deferred event for missing leader pane');
+      assert.equal(deferred.source_type, 'team_dispatch');
+      assert.equal(typeof deferred.tmux_session, 'string');
+      assert.ok(deferred.tmux_session.length > 0);
+      assert.equal(deferred.leader_pane_id, null);
+      assert.equal(deferred.tmux_injection_attempted, false);
+
+      const dispatchLogPath = join(cwd, '.omx', 'logs', `team-dispatch-${new Date().toISOString().slice(0, 10)}.jsonl`);
+      const dispatchLogs = (await readFile(dispatchLogPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const deferredLog = dispatchLogs.find((entry: { type?: string; request_id?: string }) =>
+        entry.type === 'dispatch_deferred' && entry.request_id === queued.request.request_id);
+      assert.ok(deferredLog, 'expected dispatch_deferred log entry');
+      assert.equal(typeof deferredLog.tmux_session, 'string');
+      assert.ok(deferredLog.tmux_session.length > 0);
+      assert.equal(deferredLog.leader_pane_id, null);
+      assert.equal(deferredLog.tmux_injection_attempted, false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not duplicate deferred leader artifacts across repeated drain ticks', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
+    try {
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      const msg = await sendDirectMessage('alpha', 'worker-1', 'leader-fixed', 'hello leader', cwd);
+      const queued = await enqueueDispatchRequest('alpha', {
+        kind: 'mailbox',
+        to_worker: 'leader-fixed',
+        message_id: msg.message_id,
+        trigger_message: 'check leader mailbox',
+      }, cwd);
+
+      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const mod = await import(pathToFileURL(modulePath).href);
+      await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5, injector: async () => ({ ok: true, reason: 'injected_for_test' }) });
+      await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5, injector: async () => ({ ok: true, reason: 'injected_for_test' }) });
+
+      const eventsPath = join(cwd, '.omx', 'state', 'team', 'alpha', 'events', 'events.ndjson');
+      const events = (await readFile(eventsPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const deferredEvents = events.filter((event: { type?: string; request_id?: string }) =>
+        event.type === 'leader_notification_deferred' && event.request_id === queued.request.request_id);
+      assert.equal(deferredEvents.length, 1, 'should only write one deferred event per missing-pane request until state changes');
+
+      const dispatchLogPath = join(cwd, '.omx', 'logs', `team-dispatch-${new Date().toISOString().slice(0, 10)}.jsonl`);
+      const dispatchLogs = (await readFile(dispatchLogPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const deferredLogs = dispatchLogs.filter((entry: { type?: string; request_id?: string }) =>
+        entry.type === 'dispatch_deferred' && entry.request_id === queued.request.request_id);
+      assert.equal(deferredLogs.length, 1, 'should only log one dispatch_deferred artifact per missing-pane request until state changes');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -187,7 +257,7 @@ describe('notify-hook team dispatch consumer', () => {
         kind: 'mailbox',
         to_worker: 'leader-fixed',
         message_id: msg.message_id,
-        trigger_message: 'leader pane dispatch',
+        trigger_message: 'Read .omx/state/team/alpha/mailbox/leader-fixed.json; worker-1 sent a new message. Reply with the next concrete step.',
       }, cwd);
 
       const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
@@ -197,6 +267,7 @@ describe('notify-hook team dispatch consumer', () => {
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf8');
       assert.match(tmuxLog, /send-keys -t %99/);
+      assert.match(tmuxLog, /mailbox\/leader-fixed\.json; worker-1 sent a new message/);
       assert.doesNotMatch(tmuxLog, /send-keys -t .*devsess/);
     } finally {
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
@@ -448,15 +519,16 @@ describe('notify-hook team dispatch consumer', () => {
       await mkdir(fakeBinDir, { recursive: true });
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
-      // Each verify round now does narrow + wide capture (2 calls per round).
-      // Pre-capture on retries returns 'ready' (no trigger) to allow retype.
+      // Shared preflight now adds one 80-line capture per tick before the
+      // narrow retry check. Pre-capture on retries still returns "ready"
+      // (no trigger) so the request is retyped on every retry.
       await writeFile(captureSeqFile, [
-        // tick1: 3 verify rounds × 2 captures = 6
-        'ping', 'ping', 'ping', 'ping', 'ping', 'ping',
-        // tick2: 1 pre-capture + 3 verify rounds × 2 captures = 7
+        // tick1: 1 shared preflight + 3 verify rounds × 2 captures = 7
         'ready', 'ping', 'ping', 'ping', 'ping', 'ping', 'ping',
-        // tick3: 1 pre-capture + 3 verify rounds × 2 captures = 7
-        'ready', 'ping', 'ping', 'ping', 'ping', 'ping', 'ping',
+        // tick2: 1 shared preflight + 1 pre-capture + 3 verify rounds × 2 captures = 8
+        'ready', 'ready', 'ping', 'ping', 'ping', 'ping', 'ping', 'ping',
+        // tick3: 1 shared preflight + 1 pre-capture + 3 verify rounds × 2 captures = 8
+        'ready', 'ready', 'ping', 'ping', 'ping', 'ping', 'ping', 'ping',
       ].join('\n'));
       process.env.PATH = `${fakeBinDir}:${previousPath || ''}`;
       process.env.OMX_TEST_CAPTURE_SEQUENCE_FILE = captureSeqFile;

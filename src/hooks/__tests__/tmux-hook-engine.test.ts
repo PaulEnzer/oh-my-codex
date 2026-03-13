@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_ALLOWED_MODES,
   DEFAULT_MARKER,
+  normalizeTmuxCapture,
   normalizeTmuxHookConfig,
   pickActiveMode,
+  paneHasActiveTask,
+  paneIsBootstrapping,
+  paneLooksReady,
   evaluateInjectionGuards,
   buildSendKeysArgv,
   buildPaneCurrentCommandArgv,
@@ -295,5 +299,51 @@ describe('buildSendKeysArgv', () => {
       prompt: 'continue',
       dryRun: true,
     }), null);
+  });
+});
+
+describe('normalizeTmuxCapture', () => {
+  it('collapses whitespace and trims tmux capture text', () => {
+    assert.equal(normalizeTmuxCapture('  hello\r\n  world  \n'), 'hello world');
+  });
+});
+
+describe('paneIsBootstrapping', () => {
+  it('detects startup/loading markers', () => {
+    assert.equal(paneIsBootstrapping(['model: loading']), true);
+    assert.equal(paneIsBootstrapping(['Initializing workspace']), true);
+    assert.equal(paneIsBootstrapping(['connecting to agent']), true);
+  });
+
+  it('returns false for ready prompt content', () => {
+    assert.equal(paneIsBootstrapping(['› ready']), false);
+  });
+});
+
+describe('paneLooksReady', () => {
+  it('accepts explicit prompt lines', () => {
+    assert.equal(paneLooksReady('some output\n› '), true);
+    assert.equal(paneLooksReady('some output\n❯ '), true);
+  });
+
+  it('rejects status-only and bootstrapping captures', () => {
+    assert.equal(paneLooksReady('gpt-5 50% left'), false);
+    assert.equal(paneLooksReady('model: loading\n› '), false);
+  });
+
+  it('accepts issue-only prompts without a glyph', () => {
+    assert.equal(paneLooksReady('IND-123 only...'), true);
+  });
+});
+
+describe('paneHasActiveTask', () => {
+  it('detects Codex and Claude activity markers', () => {
+    assert.equal(paneHasActiveTask('• Running tests (3m 12s • esc to interrupt)'), true);
+    assert.equal(paneHasActiveTask('· Pollinating…'), true);
+    assert.equal(paneHasActiveTask('2 background terminal running'), true);
+  });
+
+  it('returns false for idle prompts', () => {
+    assert.equal(paneHasActiveTask('› ready for input'), false);
   });
 });

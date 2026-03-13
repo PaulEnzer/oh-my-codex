@@ -10,6 +10,7 @@ import {
   createTeamSession,
   buildWorkerProcessLaunchSpec,
   resolveTeamWorkerCli,
+  type TeamWorkerCli,
   resolveTeamWorkerCliPlan,
   resolveTeamWorkerLaunchMode,
   waitForWorkerReady,
@@ -21,6 +22,7 @@ import {
   isWorkerAlive,
   getWorkerPanePid,
   killWorkerByPaneIdAsync,
+  restoreStandaloneHudPane,
   teardownWorkerPanes,
   unregisterResizeHook,
   destroyTeamSession,
@@ -38,9 +40,11 @@ import {
   teamReadTask as readTask,
   teamListTasks as listTasks,
   teamReadManifest as readTeamManifestV2,
+  teamNormalizeGovernance as normalizeTeamGovernance,
   teamNormalizePolicy as normalizeTeamPolicy,
   teamClaimTask as claimTask,
   teamReleaseTaskClaim as releaseTaskClaim,
+  teamReclaimExpiredTaskClaim as reclaimExpiredTaskClaim,
   teamAppendEvent as appendTeamEvent,
   teamReadTaskApproval as readTaskApproval,
   teamListMailbox as listMailboxMessages,
@@ -63,8 +67,10 @@ import {
   type WorkerHeartbeat,
   type WorkerStatus,
   type TeamTask,
+  type TeamManifestV2,
   type TeamMonitorSnapshotState,
   type TeamPhaseState,
+  type TeamGovernance,
   type TeamPolicy,
 } from './team-ops.js';
 import {
@@ -83,6 +89,8 @@ import {
   generateShutdownInbox,
   generateTriggerMessage,
   generateMailboxTriggerMessage,
+  generateLeaderMailboxTriggerMessage,
+  writeWorkerRoleInstructionsFile,
 } from './worker-bootstrap.js';
 import { loadRolePrompt } from './role-router.js';
 import { codexPromptsDir } from '../utils/paths.js';
@@ -94,11 +102,15 @@ import {
   resolveTeamLowComplexityDefaultModel,
   parseTeamWorkerLaunchArgs,
   splitWorkerLaunchArgs,
+  resolveAgentReasoningEffort,
+  type TeamReasoningEffort,
 } from './model-contract.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
 import { inferPhaseTargetFromTaskCounts, reconcilePhaseStateForMonitor } from './phase-controller.js';
 import { getTeamTmuxSessions } from '../notifications/tmux.js';
 import { hasStructuredVerificationEvidence } from '../verification/verifier.js';
+import { buildRebalanceDecisions } from './rebalance-policy.js';
+import { readModeState, updateModeState } from '../modes/base.js';
 import {
   ensureWorktree,
   planWorktreeTarget,
@@ -141,6 +153,85 @@ export interface TeamSnapshot {
   };
 }
 
+async function syncRootTeamModeStateOnTerminalPhase(
+  teamName: string,
+  phase: TeamPhase | TerminalPhase,
+  cwd: string,
+): Promise<void> {
+  if (phase !== 'complete' && phase !== 'failed' && phase !== 'cancelled') return;
+
+  try {
+    const teamState = await readModeState('team', cwd);
+    if (!teamState) return;
+
+    const stateTeamName = typeof teamState.team_name === 'string' ? teamState.team_name.trim() : '';
+    if (stateTeamName && stateTeamName !== teamName) return;
+
+    const alreadySynced = teamState.active === false
+      && teamState.current_phase === phase
+      && typeof teamState.completed_at === 'string'
+      && teamState.completed_at.length > 0;
+    if (alreadySynced) return;
+
+    const updates: Record<string, unknown> = {
+      active: false,
+      current_phase: phase,
+      team_name: teamName,
+    };
+    if (typeof teamState.completed_at !== 'string' || !teamState.completed_at) {
+      updates.completed_at = new Date().toISOString();
+    }
+
+    await updateModeState('team', updates, cwd);
+  } catch {
+    // Best-effort compatibility sync only.
+  }
+}
+
+async function syncLinkedRalphModeStateOnTerminalPhase(
+  teamName: string,
+  phase: TeamPhase | TerminalPhase,
+  cwd: string,
+  nowIso: string = new Date().toISOString(),
+): Promise<void> {
+  if (phase !== 'complete' && phase !== 'failed' && phase !== 'cancelled') return;
+
+  try {
+    const [teamState, ralphState] = await Promise.all([
+      readModeState('team', cwd),
+      readModeState('ralph', cwd),
+    ]);
+    if (!teamState || !ralphState) return;
+
+    const stateTeamName = typeof teamState.team_name === 'string' ? teamState.team_name.trim() : '';
+    if (stateTeamName && stateTeamName !== teamName) return;
+    if (teamState.linked_ralph !== true || ralphState.linked_team !== true) return;
+
+    const terminalAt = typeof teamState.completed_at === 'string' && teamState.completed_at
+      ? teamState.completed_at
+      : nowIso;
+    const alreadySynced = ralphState.active === false
+      && ralphState.current_phase === phase
+      && ralphState.linked_team_terminal_phase === phase
+      && ralphState.linked_team_terminal_at === terminalAt
+      && ralphState.completed_at === terminalAt;
+    if (alreadySynced) return;
+
+    await updateModeState('ralph', {
+      active: false,
+      current_phase: phase,
+      linked_mode: 'team',
+      linked_team: true,
+      linked_team_terminal_phase: phase,
+      linked_team_terminal_at: terminalAt,
+      completed_at: terminalAt,
+      last_turn_at: nowIso,
+    }, cwd);
+  } catch {
+    // Best-effort compatibility sync only.
+  }
+}
+
 /** Runtime handle returned by startTeam */
 export interface TeamRuntime {
   teamName: string;
@@ -154,6 +245,44 @@ interface ShutdownOptions {
   force?: boolean;
   /** When true, applies ralph-specific cleanup policy: no force-kill on failure, detailed audit logging. */
   ralph?: boolean;
+}
+
+function resolveLifecycleProfile(
+  config: Pick<TeamConfig, 'lifecycle_profile'> | null | undefined,
+  manifest: Pick<TeamManifestV2, 'lifecycle_profile'> | null | undefined,
+): 'default' | 'linked_ralph' {
+  if (manifest?.lifecycle_profile === 'linked_ralph') return 'linked_ralph';
+  if (config?.lifecycle_profile === 'linked_ralph') return 'linked_ralph';
+  return 'default';
+}
+
+function collectProvisionedShutdownWorktrees(config: TeamConfig): EnsureWorktreeResult[] {
+  const seenWorktreePaths = new Set<string>();
+  const worktrees: EnsureWorktreeResult[] = [];
+
+  for (const worker of config.workers) {
+    if (worker.worktree_created !== true) continue;
+    if (worker.worktree_detached !== true) continue;
+    if (!worker.worktree_repo_root || !worker.worktree_path) continue;
+    if (!existsSync(worker.worktree_path)) continue;
+
+    const worktreePath = resolve(worker.worktree_path);
+    if (seenWorktreePaths.has(worktreePath)) continue;
+    seenWorktreePaths.add(worktreePath);
+
+    worktrees.push({
+      enabled: true,
+      repoRoot: worker.worktree_repo_root,
+      worktreePath,
+      detached: true,
+      branchName: null,
+      created: true,
+      reused: false,
+      createdBranch: false,
+    });
+  }
+
+  return worktrees;
 }
 
 export interface TeamStartOptions {
@@ -175,6 +304,9 @@ interface ShutdownGateCounts {
 const MODEL_INSTRUCTIONS_FILE_ENV = 'OMX_MODEL_INSTRUCTIONS_FILE';
 const TEAM_STATE_ROOT_ENV = 'OMX_TEAM_STATE_ROOT';
 const TEAM_LEADER_CWD_ENV = 'OMX_TEAM_LEADER_CWD';
+const WORKTREE_TRIGGER_STATE_ROOT = '$OMX_TEAM_STATE_ROOT';
+const STARTUP_EVIDENCE_TIMEOUT_MS = 2_000;
+const STARTUP_EVIDENCE_POLL_MS = 100;
 
 interface PromptWorkerHandle {
   child: ChildProcessByStdio<Writable, null, null>;
@@ -187,11 +319,118 @@ const PROMPT_WORKER_SIGTERM_WAIT_MS = 3_000;
 const PROMPT_WORKER_SIGKILL_WAIT_MS = 2_000;
 const PROMPT_WORKER_EXIT_POLL_MS = 100;
 
+function resolveInstructionStateRoot(worktreePath?: string | null): string | undefined {
+  return worktreePath ? WORKTREE_TRIGGER_STATE_ROOT : undefined;
+}
+
 function resolveWorkerReadyTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = env.OMX_TEAM_READY_TIMEOUT_MS;
   const parsed = Number.parseInt(String(raw ?? ''), 10);
   if (Number.isFinite(parsed) && parsed >= 5_000) return parsed;
   return 45_000;
+}
+
+function parseTeamWorkerContext(raw: string | undefined): { teamName: string; workerName: string } | null {
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  const [teamName, workerName] = raw.trim().split('/');
+  if (!teamName || !workerName) return null;
+  return { teamName, workerName };
+}
+
+function resolveManifestLookupCwds(cwd: string): string[] {
+  const candidates = new Set<string>([resolve(cwd)]);
+  const leaderCwd = process.env[TEAM_LEADER_CWD_ENV];
+  if (typeof leaderCwd === 'string' && leaderCwd.trim() !== '') {
+    candidates.add(resolve(leaderCwd));
+  }
+
+  const teamStateRoot = process.env[TEAM_STATE_ROOT_ENV];
+  if (typeof teamStateRoot === 'string' && teamStateRoot.trim() !== '') {
+    candidates.add(resolve(teamStateRoot, '..', '..'));
+  }
+
+  return [...candidates];
+}
+
+function resolveGovernancePolicy(
+  governance: TeamGovernance | null | undefined,
+  legacyPolicy?: Partial<TeamGovernance> | null | undefined,
+): TeamGovernance {
+  return normalizeTeamGovernance(governance, legacyPolicy);
+}
+
+async function assertNestedTeamAllowed(cwd: string): Promise<void> {
+  const workerContext = parseTeamWorkerContext(process.env.OMX_TEAM_WORKER);
+  if (!workerContext) return;
+
+  for (const candidateCwd of resolveManifestLookupCwds(cwd)) {
+    const manifest = await readTeamManifestV2(workerContext.teamName, candidateCwd);
+    const governance = resolveGovernancePolicy(manifest?.governance);
+    if (governance.nested_teams_allowed) return;
+    if (manifest) break;
+  }
+
+  throw new Error('nested_team_disallowed');
+}
+
+type WorkerStartupEvidence = 'task_claim' | 'worker_progress' | 'leader_ack' | 'none';
+
+async function readWorkerStartupEvidence(
+  teamName: string,
+  workerName: string,
+  cwd: string,
+): Promise<WorkerStartupEvidence> {
+  const status = await readWorkerStatus(teamName, workerName, cwd);
+  if (typeof status.current_task_id === 'string' && status.current_task_id.trim() !== '') {
+    return 'task_claim';
+  }
+  if (status.state === 'working' || status.state === 'blocked' || status.state === 'done' || status.state === 'failed') {
+    return 'worker_progress';
+  }
+  const leaderMailbox = await listMailboxMessages(teamName, 'leader-fixed', cwd).catch(() => []);
+  if (leaderMailbox.some((message) => message?.from_worker === workerName)) {
+    return 'leader_ack';
+  }
+  return 'none';
+}
+
+function doesStartupEvidenceSettle(
+  workerCli: TeamWorkerCli,
+  evidence: WorkerStartupEvidence,
+): boolean {
+  if (evidence === 'none') return false;
+  if (workerCli === 'codex' && evidence === 'leader_ack') return false;
+  return true;
+}
+
+export async function waitForWorkerStartupEvidence(params: {
+  teamName: string;
+  workerName: string;
+  workerCli: TeamWorkerCli;
+  cwd: string;
+  timeoutMs?: number;
+  pollMs?: number;
+}): Promise<WorkerStartupEvidence> {
+  const timeoutMs = Math.max(0, Math.floor(params.timeoutMs ?? STARTUP_EVIDENCE_TIMEOUT_MS));
+  const pollMs = Math.max(25, Math.floor(params.pollMs ?? STARTUP_EVIDENCE_POLL_MS));
+  const deadline = Date.now() + timeoutMs;
+
+  while (true) {
+    const evidence = await readWorkerStartupEvidence(params.teamName, params.workerName, params.cwd);
+    if (doesStartupEvidenceSettle(params.workerCli, evidence)) return evidence;
+    if (Date.now() >= deadline) return 'none';
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
+
+export async function waitForClaudeStartupEvidence(params: {
+  teamName: string;
+  workerName: string;
+  cwd: string;
+  timeoutMs?: number;
+  pollMs?: number;
+}): Promise<WorkerStartupEvidence> {
+  return await waitForWorkerStartupEvidence({ ...params, workerCli: 'claude' });
 }
 
 function shouldSkipWorkerReadyWait(env: NodeJS.ProcessEnv): boolean {
@@ -257,6 +496,7 @@ function isPidAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return false;
     process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
     return false;
   }
@@ -304,7 +544,9 @@ async function teardownPromptWorker(
       process.kill(pid, 'SIGTERM');
     }
   } catch (err) {
-    process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
+    if ((err as NodeJS.ErrnoException).code !== 'ESRCH') {
+      process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
+    }
     // Best effort.
   }
 
@@ -331,7 +573,9 @@ async function teardownPromptWorker(
       process.kill(pid, 'SIGKILL');
     }
   } catch (err) {
-    process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
+    if ((err as NodeJS.ErrnoException).code !== 'ESRCH') {
+      process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
+    }
     // Best effort.
   }
 
@@ -361,14 +605,7 @@ async function teardownPromptWorker(
 function isPromptWorkerAlive(config: TeamConfig, worker: WorkerInfo): boolean {
   const handle = getPromptWorkerHandle(config.name, worker.name);
   if (handle?.child.exitCode === null && !handle.child.killed) return true;
-  if (!Number.isFinite(worker.pid) || (worker.pid ?? 0) <= 0) return false;
-  try {
-    process.kill(worker.pid as number, 0);
-    return true;
-  } catch (err) {
-    process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
-    return false;
-  }
+  return isPidAlive(worker.pid as number);
 }
 
 export { TEAM_LOW_COMPLEXITY_DEFAULT_MODEL };
@@ -411,6 +648,8 @@ export function resolveWorkerLaunchArgsFromEnv(
   env: NodeJS.ProcessEnv,
   agentType: string,
   inheritedLeaderModel?: string,
+  preferredReasoning?: TeamReasoningEffort,
+  workerCliOverride?: TeamWorkerCli,
 ): string[] {
   const inheritedArgs = (typeof inheritedLeaderModel === 'string' && inheritedLeaderModel.trim() !== '')
     ? ['--model', inheritedLeaderModel.trim()]
@@ -428,6 +667,7 @@ export function resolveWorkerLaunchArgsFromEnv(
     existingRaw: env.OMX_TEAM_WORKER_LAUNCH_ARGS,
     inheritedArgs,
     fallbackModel,
+    preferredReasoning,
   });
 
   // Extract resolved model and thinking level from result args for startup log
@@ -435,8 +675,10 @@ export function resolveWorkerLaunchArgsFromEnv(
   const resolvedModel = resolvedParsed.modelOverride ?? fallbackModel ?? 'default';
   const reasoningMatch = resolvedParsed.reasoningOverride?.match(/model_reasoning_effort\s*=\s*"?(\w+)"?/);
   const thinkingLevel = reasoningMatch?.[1] ?? 'none';
-  const source = hasExplicitReasoning ? 'explicit' : 'none/default-none';
-  const effectiveWorkerCli = resolveEffectiveWorkerCliForStartupLog(resolved, env);
+  const source = hasExplicitReasoning
+    ? 'explicit'
+    : (preferredReasoning ? 'role-default' : 'none/default-none');
+  const effectiveWorkerCli = workerCliOverride ?? resolveEffectiveWorkerCliForStartupLog(resolved, env);
   if (effectiveWorkerCli === 'claude') {
     console.log('[omx:team] worker startup resolution: model=claude source=local-settings');
   } else if (effectiveWorkerCli === 'gemini') {
@@ -485,13 +727,12 @@ export async function startTeam(
   task: string,
   agentType: string,
   workerCount: number,
-  tasks: Array<{ subject: string; description: string; owner?: string; blocked_by?: string[] }>,
+  tasks: Array<{ subject: string; description: string; owner?: string; blocked_by?: string[]; role?: string }>,
   cwd: string,
   options: TeamStartOptions = {},
 ): Promise<TeamRuntime> {
-  if (process.env.OMX_TEAM_WORKER) {
-    throw new Error('nested_team_disallowed');
-  }
+  const leaderCwd = resolve(cwd);
+  await assertNestedTeamAllowed(leaderCwd);
 
   const workerLaunchMode = resolveTeamWorkerLaunchMode(process.env);
   const displayMode = workerLaunchMode === 'interactive' ? 'split_pane' : 'auto';
@@ -504,7 +745,6 @@ export async function startTeam(
     }
   }
 
-  const leaderCwd = resolve(cwd);
   const sanitized = sanitizeTeamName(teamName);
   const teamStateRoot = resolveCanonicalTeamStateRoot(leaderCwd);
   const activeWorktreeMode: 'detached' | 'named' | null =
@@ -514,9 +754,11 @@ export async function startTeam(
   const workspaceMode: 'single' | 'worktree' = activeWorktreeMode ? 'worktree' : 'single';
   const workerWorkspaceByName = new Map<string, {
     cwd: string;
+    worktreeRepoRoot?: string;
     worktreePath?: string;
     worktreeBranch?: string;
     worktreeDetached?: boolean;
+    worktreeCreated?: boolean;
   }>();
   const provisionedWorktrees: Array<EnsureWorktreeResult | { enabled: false }> = [];
   for (let i = 1; i <= workerCount; i++) {
@@ -538,9 +780,11 @@ export async function startTeam(
       if (ensured.enabled) {
         workerWorkspaceByName.set(workerName, {
           cwd: ensured.worktreePath,
+          worktreeRepoRoot: ensured.repoRoot,
           worktreePath: ensured.worktreePath,
           worktreeBranch: ensured.branchName ?? undefined,
           worktreeDetached: ensured.detached,
+          worktreeCreated: ensured.created,
         });
       }
     }
@@ -562,8 +806,13 @@ export async function startTeam(
   const createdWorkerPaneIds: string[] = [];
   let createdLeaderPaneId: string | undefined;
   let config: TeamConfig | null = null;
-  const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(process.env, agentType);
-  const workerCliPlan = resolveTeamWorkerCliPlan(workerCount, workerLaunchArgs, process.env);
+  const sharedWorkerLaunchArgs = resolveTeamWorkerLaunchArgs({
+    existingRaw: process.env.OMX_TEAM_WORKER_LAUNCH_ARGS,
+    fallbackModel: isLowComplexityAgentType(agentType)
+      ? resolveTeamLowComplexityDefaultModel(process.env.CODEX_HOME)
+      : undefined,
+  });
+  const workerCliPlan = resolveTeamWorkerCliPlan(workerCount, sharedWorkerLaunchArgs, process.env);
   const workerReadyTimeoutMs = resolveWorkerReadyTimeoutMs(process.env);
   const skipWorkerReadyWait = shouldSkipWorkerReadyWait(process.env);
 
@@ -582,6 +831,7 @@ export async function startTeam(
         team_state_root: teamStateRoot,
         workspace_mode: workspaceMode,
       },
+      options.ralph === true ? 'linked_ralph' : 'default',
     );
     if (!config) {
       throw new Error('failed to initialize team config');
@@ -598,6 +848,7 @@ export async function startTeam(
         status: 'pending',
         owner: t.owner,
         blocked_by: t.blocked_by,
+        role: t.role,
       }, leaderCwd);
     }
 
@@ -608,13 +859,23 @@ export async function startTeam(
     const allTasks = await listTasks(sanitized, leaderCwd);
     const workerBootstrapPlans = [] as Array<{
       workerName: string;
-      workerWorkspace: { cwd: string; worktreePath?: string; worktreeBranch?: string; worktreeDetached?: boolean; };
+      workerWorkspace: {
+        cwd: string;
+        worktreeRepoRoot?: string;
+        worktreePath?: string;
+        worktreeBranch?: string;
+        worktreeDetached?: boolean;
+        worktreeCreated?: boolean;
+      };
       workerTasks: TeamTask[];
       workerRole: string;
       rolePromptContent: string | null;
+      instructionsFilePath: string;
       inbox: string;
       trigger: string;
       initialPrompt?: string;
+      workerLaunchArgs: string[];
+      workerCli: TeamWorkerCli;
     }>;
 
     for (let i = 1; i <= workerCount; i++) {
@@ -626,16 +887,30 @@ export async function startTeam(
       const workerRole = taskRoles.length > 0 && uniqueTaskRoles.size === 1
         ? taskRoles[0]
         : agentType;
-      const rolePromptContent = workerRole !== agentType
-        ? await loadRolePrompt(workerRole, codexPromptsDir())
-        : null;
+      const rolePromptContent = await loadRolePrompt(workerRole, join(leaderCwd, '.codex', 'prompts'))
+        ?? await loadRolePrompt(workerRole, codexPromptsDir());
+      const instructionsFilePath = rolePromptContent
+        ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, workerInstructionsPath, workerRole, rolePromptContent)
+        : workerInstructionsPath;
       const inbox = generateInitialInbox(workerName, sanitized, agentType, workerTasks, {
         teamStateRoot,
         leaderCwd,
         workerRole,
         rolePromptContent: rolePromptContent ?? undefined,
       });
-      const trigger = generateTriggerMessage(workerName, sanitized);
+      const trigger = generateTriggerMessage(
+        workerName,
+        sanitized,
+        resolveInstructionStateRoot(workerWorkspace.worktreePath),
+      );
+      const preferredReasoning = resolveAgentReasoningEffort(workerRole) ?? resolveAgentReasoningEffort(agentType);
+      const workerLaunchArgs = resolveWorkerLaunchArgsFromEnv(
+        process.env,
+        agentType,
+        undefined,
+        preferredReasoning,
+        workerCliPlan[i - 1],
+      );
       const initialPrompt = workerCliPlan[i - 1] === 'gemini' ? trigger : undefined;
       if (initialPrompt) {
         await writeWorkerInbox(sanitized, workerName, inbox, leaderCwd);
@@ -646,9 +921,12 @@ export async function startTeam(
         workerTasks,
         workerRole,
         rolePromptContent,
+        instructionsFilePath,
         inbox,
         trigger,
         initialPrompt,
+        workerLaunchArgs,
+        workerCli: workerCliPlan[i - 1],
       });
     }
 
@@ -656,6 +934,7 @@ export async function startTeam(
       const env: Record<string, string> = {
         [TEAM_STATE_ROOT_ENV]: teamStateRoot,
         [TEAM_LEADER_CWD_ENV]: leaderCwd,
+        [MODEL_INSTRUCTIONS_FILE_ENV]: plan.instructionsFilePath,
       };
       if (plan.workerWorkspace.worktreePath) {
         env.OMX_TEAM_WORKTREE_PATH = plan.workerWorkspace.worktreePath;
@@ -670,6 +949,8 @@ export async function startTeam(
         cwd: plan.workerWorkspace.cwd,
         env,
         initialPrompt: plan.initialPrompt,
+        launchArgs: plan.workerLaunchArgs,
+        workerCli: plan.workerCli,
       };
     });
 
@@ -677,7 +958,7 @@ export async function startTeam(
 
     // 6. Create worker runtime (interactive tmux panes or prompt-mode child processes)
     if (workerLaunchMode === 'interactive') {
-      const createdSession = createTeamSession(sanitized, workerCount, leaderCwd, workerLaunchArgs, workerStartups);
+      const createdSession = createTeamSession(sanitized, workerCount, leaderCwd, sharedWorkerLaunchArgs, workerStartups);
       sessionName = createdSession.name;
       sessionCreated = true;
       createdWorkerPaneIds.push(...createdSession.workerPaneIds);
@@ -704,9 +985,9 @@ export async function startTeam(
           workerName,
           i,
           startup.cwd || leaderCwd,
-          workerLaunchArgs,
+          startup.launchArgs || sharedWorkerLaunchArgs,
           startup.env || {},
-          workerCliPlan[i - 1],
+          startup.workerCli || workerCliPlan[i - 1],
           startup.initialPrompt,
         );
         if (config.workers[i - 1]) {
@@ -747,9 +1028,11 @@ export async function startTeam(
         worker_cli: workerCliPlan[i - 1],
         assigned_tasks: workerTasks.map(t => t.id),
         working_dir: workerWorkspace.cwd,
+        worktree_repo_root: workerWorkspace.worktreeRepoRoot,
         worktree_path: workerWorkspace.worktreePath,
         worktree_branch: workerWorkspace.worktreeBranch,
         worktree_detached: workerWorkspace.worktreeDetached,
+        worktree_created: workerWorkspace.worktreeCreated,
         team_state_root: teamStateRoot,
       };
 
@@ -763,11 +1046,14 @@ export async function startTeam(
       if (paneId) identity.pane_id = paneId;
       if (config.workers[i - 1]) {
         config.workers[i - 1].pane_id = paneId;
+        config.workers[i - 1].role = workerRole;
         config.workers[i - 1].worker_cli = workerCliPlan[i - 1];
         config.workers[i - 1].working_dir = workerWorkspace.cwd;
+        config.workers[i - 1].worktree_repo_root = workerWorkspace.worktreeRepoRoot;
         config.workers[i - 1].worktree_path = workerWorkspace.worktreePath;
         config.workers[i - 1].worktree_branch = workerWorkspace.worktreeBranch;
         config.workers[i - 1].worktree_detached = workerWorkspace.worktreeDetached;
+        config.workers[i - 1].worktree_created = workerWorkspace.worktreeCreated;
         config.workers[i - 1].team_state_root = teamStateRoot;
       }
 
@@ -797,11 +1083,13 @@ export async function startTeam(
             workerName,
             workerIndex: i,
             paneId,
+            workerCli: workerCliPlan[i - 1],
             inbox,
             triggerMessage: trigger,
             cwd: leaderCwd,
             dispatchPolicy,
             inboxCorrelationKey: `startup:${workerName}`,
+            requireWorkerStartupEvidence: true,
           });
           if (dispatchOutcome.ok) break;
           if (attempt < maxStartupDispatchRetries) {
@@ -948,9 +1236,18 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
   const listTasksStartMs = performance.now();
   const allTasks = await listTasks(sanitized, cwd);
   const listTasksMs = performance.now() - listTasksStartMs;
-  const taskById = new Map(allTasks.map((task) => [task.id, task] as const));
-  const inProgressByOwner = new Map<string, TeamTask[]>();
+
+  const reclaimedTaskIds: string[] = [];
   for (const task of allTasks) {
+    if (task.status !== 'in_progress' || !task.claim?.leased_until) continue;
+    if (new Date(task.claim.leased_until) > new Date()) continue;
+    const reclaimed = await reclaimExpiredTaskClaim(sanitized, task.id, cwd);
+    if (reclaimed.ok && reclaimed.reclaimed) reclaimedTaskIds.push(task.id);
+  }
+  let taskView = reclaimedTaskIds.length > 0 ? await listTasks(sanitized, cwd) : allTasks;
+  const taskById = new Map(taskView.map((task) => [task.id, task] as const));
+  const inProgressByOwner = new Map<string, TeamTask[]>();
+  for (const task of taskView) {
     if (task.status !== 'in_progress' || !task.owner) continue;
     const existing = inProgressByOwner.get(task.owner) || [];
     existing.push(task);
@@ -1017,17 +1314,51 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
     }
   }
 
+  for (const taskId of reclaimedTaskIds) {
+    recommendations.push(`Reclaimed expired claim for task-${taskId}`);
+  }
+  const rebalanceDecisions = buildRebalanceDecisions({
+    tasks: taskView,
+    workers: workers.map((worker) => ({
+      name: worker.name,
+      role: config.workers.find((entry) => entry.name === worker.name)?.role,
+      alive: worker.alive,
+      status: worker.status,
+    })),
+    reclaimedTaskIds,
+  });
+
+  let assignedDuringMonitor = false;
+  for (const decision of rebalanceDecisions) {
+    if (decision.type === 'assign' && decision.taskId && decision.workerName) {
+      try {
+        await assignTask(sanitized, decision.workerName, decision.taskId, cwd);
+        recommendations.push(`Assigned task-${decision.taskId} to ${decision.workerName}: ${decision.reason}`);
+        assignedDuringMonitor = true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        recommendations.push(`Unable to assign task-${decision.taskId} to ${decision.workerName}: ${message}`);
+      }
+    } else {
+      recommendations.push(decision.reason);
+    }
+  }
+
+  if (assignedDuringMonitor) {
+    taskView = await listTasks(sanitized, cwd);
+  }
+
   // Count tasks
   const taskCounts = {
-    total: allTasks.length,
-    pending: allTasks.filter(t => t.status === 'pending').length,
-    blocked: allTasks.filter(t => t.status === 'blocked').length,
-    in_progress: allTasks.filter(t => t.status === 'in_progress').length,
-    completed: allTasks.filter(t => t.status === 'completed').length,
-    failed: allTasks.filter(t => t.status === 'failed').length,
+    total: taskView.length,
+    pending: taskView.filter(t => t.status === 'pending').length,
+    blocked: taskView.filter(t => t.status === 'blocked').length,
+    in_progress: taskView.filter(t => t.status === 'in_progress').length,
+    completed: taskView.filter(t => t.status === 'completed').length,
+    failed: taskView.filter(t => t.status === 'failed').length,
   };
 
-  const verificationPendingTasks = allTasks.filter(
+  const verificationPendingTasks = taskView.filter(
     (task) => task.status === 'completed'
       && task.requires_code_change === true
       && !hasStructuredVerificationEvidence(task.result),
@@ -1039,16 +1370,29 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
   }
 
   const allTasksTerminal = taskCounts.pending === 0 && taskCounts.blocked === 0 && taskCounts.in_progress === 0;
+  const deadWorkerStall =
+    config.worker_launch_mode === 'prompt'
+    && config.workers.length > 0
+    && deadWorkers.length >= config.workers.length
+    && !allTasksTerminal;
 
   const persistedPhase = await readTeamPhaseState(sanitized, cwd);
-  const targetPhase = inferPhaseTargetFromTaskCounts(taskCounts, {
-    verificationPending: verificationPendingTasks.length > 0,
-  });
+  const targetPhase = deadWorkerStall
+    ? 'failed'
+    : inferPhaseTargetFromTaskCounts(taskCounts, {
+      verificationPending: verificationPendingTasks.length > 0,
+    });
   const phaseState: TeamPhaseState = reconcilePhaseStateForMonitor(persistedPhase, targetPhase);
   await writeTeamPhaseState(sanitized, phaseState, cwd);
   const phase: TeamPhase | TerminalPhase = phaseState.current_phase;
+  await syncRootTeamModeStateOnTerminalPhase(sanitized, phase, cwd);
+  await syncLinkedRalphModeStateOnTerminalPhase(sanitized, phase, cwd);
 
-  await emitMonitorDerivedEvents(sanitized, allTasks, workers, previousSnapshot, cwd);
+  if (deadWorkerStall) {
+    recommendations.push('All workers are dead while work remains; mark the team failed or restart with fresh workers.');
+  }
+
+  await emitMonitorDerivedEvents(sanitized, taskView, workers, previousSnapshot, config.worker_launch_mode, cwd);
   const mailboxDeliveryStartMs = performance.now();
   const mailboxNotifiedByMessageId = await deliverPendingMailboxMessages(
     sanitized,
@@ -1081,7 +1425,7 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
   await writeMonitorSnapshot(
     sanitized,
       {
-        taskStatusById: Object.fromEntries(allTasks.map((t) => [t.id, t.status])),
+        taskStatusById: Object.fromEntries(taskView.map((t) => [t.id, t.status])),
         workerAliveByName: Object.fromEntries(workers.map((w) => [w.name, w.alive])),
         workerStateByName: Object.fromEntries(workers.map((w) => [w.name, w.status.state])),
         workerTurnCountByName: Object.fromEntries(workers.map((w) => [w.name, w.heartbeat?.turn_count ?? 0])),
@@ -1105,7 +1449,7 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
     workers,
     tasks: {
       ...taskCounts,
-      items: allTasks,
+      items: taskView,
     },
     allTasksTerminal,
     deadWorkers,
@@ -1134,12 +1478,13 @@ export async function assignTask(
   const task = await readTask(sanitized, taskId, cwd);
   if (!task) throw new Error(`Task ${taskId} not found`);
   const manifest = await readTeamManifestV2(sanitized, cwd);
+  const governance = resolveGovernancePolicy(manifest?.governance);
 
-  if (manifest?.policy?.delegation_only && workerName === 'leader-fixed') {
+  if (governance.delegation_only && workerName === 'leader-fixed') {
     throw new Error('delegation_only_violation');
   }
 
-  if (manifest?.policy?.plan_approval_required && task.requires_code_change === true) {
+  if (governance.plan_approval_required && task.requires_code_change === true) {
     const approved = await isTaskApprovedForExecution(sanitized, taskId, cwd);
     if (!approved) {
       throw new Error('plan_approval_required');
@@ -1173,7 +1518,11 @@ export async function assignTask(
         workerIndex: workerInfo.index,
         paneId: workerInfo.pane_id,
         inbox,
-        triggerMessage: generateTriggerMessage(workerName, sanitized),
+        triggerMessage: generateTriggerMessage(
+          workerName,
+          sanitized,
+          resolveInstructionStateRoot(workerInfo.worktree_path),
+        ),
         cwd,
         dispatchPolicy,
         inboxCorrelationKey: `assign:${taskId}:${workerName}`,
@@ -1237,7 +1586,6 @@ export async function reassignTask(
  */
 export async function shutdownTeam(teamName: string, cwd: string, options: ShutdownOptions = {}): Promise<void> {
   const force = options.force === true;
-  const ralph = options.ralph === true;
   const sanitized = sanitizeTeamName(teamName);
   const config = await readTeamConfig(sanitized, cwd);
   if (!config) {
@@ -1251,6 +1599,13 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     restoreTeamModelInstructionsFile(sanitized);
     return;
   }
+  const manifest = await readTeamManifestV2(sanitized, cwd);
+  const lifecycleProfile = resolveLifecycleProfile(config, manifest);
+  const ralph = options.ralph === true || lifecycleProfile === 'linked_ralph';
+  const governance = resolveGovernancePolicy(
+    manifest?.governance,
+    manifest?.policy as Partial<TeamGovernance> | undefined,
+  );
 
   if (!force) {
     const allTasks = await listTasks(sanitized, cwd);
@@ -1263,14 +1618,15 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       failed: allTasks.filter((t) => t.status === 'failed').length,
       allowed: false,
     };
-    gate.allowed = gate.pending === 0 && gate.blocked === 0 && gate.in_progress === 0 && gate.failed === 0;
+    gate.allowed = governance.cleanup_requires_all_workers_inactive !== true
+      || (gate.pending === 0 && gate.blocked === 0 && gate.in_progress === 0 && gate.failed === 0);
 
     await appendTeamEvent(
       sanitized,
       {
         type: 'shutdown_gate',
         worker: 'leader-fixed',
-        reason: `allowed=${gate.allowed} total=${gate.total} pending=${gate.pending} blocked=${gate.blocked} in_progress=${gate.in_progress} completed=${gate.completed} failed=${gate.failed}${ralph ? ' policy=ralph' : ''}`,
+        reason: `allowed=${gate.allowed} total=${gate.total} pending=${gate.pending} blocked=${gate.blocked} in_progress=${gate.in_progress} completed=${gate.completed} failed=${gate.failed} cleanup_requires_all_workers_inactive=${governance.cleanup_requires_all_workers_inactive}${ralph ? ' policy=ralph' : ''}`,
       },
       cwd,
     ).catch(() => {});
@@ -1306,7 +1662,6 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   }
 
   const sessionName = config.tmux_session;
-  const manifest = await readTeamManifestV2(sanitized, cwd);
   const dispatchPolicy = resolveDispatchPolicy(manifest?.policy, config.worker_launch_mode);
   const shutdownRequestTimes = new Map<string, string>();
 
@@ -1323,7 +1678,11 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
         workerIndex: w.index,
         paneId: w.pane_id,
         inbox: generateShutdownInbox(sanitized, w.name),
-        triggerMessage: generateTriggerMessage(w.name, sanitized),
+        triggerMessage: generateTriggerMessage(
+          w.name,
+          sanitized,
+          resolveInstructionStateRoot(w.worktree_path),
+        ),
         cwd,
         dispatchPolicy,
         inboxCorrelationKey: `shutdown:${w.name}`,
@@ -1408,6 +1767,15 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       leaderPaneId,
       hudPaneId,
     });
+    if (hudPaneId) {
+      await killWorkerByPaneIdAsync(hudPaneId, leaderPaneId ?? undefined);
+      if (sessionName.includes(':')) {
+        const restoredHudPaneId = restoreStandaloneHudPane(leaderPaneId, cwd);
+        if (!restoredHudPaneId) {
+          console.warn(`[team shutdown] ${sanitized}: failed to restore standalone HUD pane`);
+        }
+      }
+    }
 
     // 4. Destroy tmux session
     if (!sessionName.includes(':')) {
@@ -1459,10 +1827,31 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       },
       cwd,
     ).catch(() => {});
+    await syncLinkedRalphModeStateOnTerminalPhase(sanitized, 'cancelled', cwd);
+  }
+
+  const cleanupErrors: string[] = [];
+  const provisionedWorktrees = collectProvisionedShutdownWorktrees(config);
+  if (provisionedWorktrees.length > 0) {
+    try {
+      await rollbackProvisionedWorktrees(provisionedWorktrees, {
+        skipBranchDeletion: options.ralph === true,
+      });
+    } catch (err) {
+      cleanupErrors.push(`rollbackProvisionedWorktrees: ${String(err)}`);
+    }
   }
 
   // 7. Cleanup state
-  await cleanupTeamState(sanitized, cwd);
+  try {
+    await cleanupTeamState(sanitized, cwd);
+  } catch (err) {
+    cleanupErrors.push(`cleanupTeamState: ${String(err)}`);
+  }
+
+  if (cleanupErrors.length > 0) {
+    throw new Error(cleanupErrors.join(' | '));
+  }
 }
 
 /**
@@ -1472,6 +1861,8 @@ export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRun
   const sanitized = sanitizeTeamName(teamName);
   const config = await readTeamConfig(sanitized, cwd);
   if (!config) return null;
+  const manifest = await readTeamManifestV2(sanitized, cwd);
+  config.lifecycle_profile = resolveLifecycleProfile(config, manifest);
 
   if (config.worker_launch_mode === 'prompt') {
     const hasLivePromptWorker = config.workers.some((worker) => isPromptWorkerAlive(config, worker));
@@ -1480,13 +1871,7 @@ export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRun
     const missingHandles = config.workers
       .filter((worker) => {
         if (!Number.isFinite(worker.pid) || (worker.pid ?? 0) <= 0) return false;
-        try {
-          process.kill(worker.pid as number, 0);
-          return true;
-        } catch (err) {
-          process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
-          return false;
-        }
+        return isPidAlive(worker.pid as number);
       })
       .filter((worker) => !getPromptWorkerHandle(sanitized, worker.name));
     if (missingHandles.length > 0) {
@@ -1529,7 +1914,8 @@ async function findActiveTeams(cwd: string, leaderSessionId: string): Promise<st
     const teamName = e.name;
     const cfg = await readTeamConfig(teamName, cwd);
     const manifest = await readTeamManifestV2(teamName, cwd);
-    if (manifest?.policy?.one_team_per_leader_session === false) continue;
+    const governance = resolveGovernancePolicy(manifest?.governance);
+    if (governance.one_team_per_leader_session === false) continue;
     const workerLaunchMode = cfg?.worker_launch_mode
       ?? manifest?.policy?.worker_launch_mode
       ?? 'interactive';
@@ -1576,15 +1962,14 @@ async function emitMonitorDerivedEvents(
   tasks: TeamTask[],
   workers: TeamSnapshot['workers'],
   previous: TeamMonitorSnapshotState | null,
+  workerLaunchMode: TeamConfig['worker_launch_mode'],
   cwd: string,
 ): Promise<void> {
-  if (!previous) return;
-
   for (const task of tasks) {
-    const prevStatus = previous.taskStatusById[task.id];
+    const prevStatus = previous?.taskStatusById[task.id];
     if (prevStatus && prevStatus !== 'completed' && task.status === 'completed') {
       // Skip if a task_completed event was already emitted by transitionTaskStatus (issue #161).
-      if (previous.completedEventTaskIds?.[task.id]) continue;
+      if (previous?.completedEventTaskIds?.[task.id]) continue;
       await appendTeamEvent(
         teamName,
         {
@@ -1600,8 +1985,9 @@ async function emitMonitorDerivedEvents(
   }
 
   for (const worker of workers) {
-    const prevAlive = previous.workerAliveByName[worker.name];
-    if (prevAlive === true && worker.alive === false) {
+    const prevAlive = previous?.workerAliveByName[worker.name];
+    const shouldEmitInitialPromptWorkerStop = workerLaunchMode === 'prompt' && prevAlive === undefined;
+    if ((prevAlive === true || shouldEmitInitialPromptWorkerStop) && worker.alive === false) {
       await appendTeamEvent(
         teamName,
         {
@@ -1615,7 +2001,23 @@ async function emitMonitorDerivedEvents(
       );
     }
 
-    const prevState = previous.workerStateByName[worker.name];
+    const prevState = previous?.workerStateByName[worker.name];
+    if (prevState && prevState !== worker.status.state) {
+      await appendTeamEvent(
+        teamName,
+        {
+          type: 'worker_state_changed',
+          worker: worker.name,
+          task_id: worker.status.current_task_id,
+          message_id: null,
+          reason: worker.status.reason,
+          state: worker.status.state,
+          prev_state: prevState,
+        },
+        cwd
+      );
+    }
+
     if (prevState && prevState !== 'idle' && worker.status.state === 'idle') {
       await appendTeamEvent(
         teamName,
@@ -1625,6 +2027,9 @@ async function emitMonitorDerivedEvents(
           task_id: worker.status.current_task_id,
           message_id: null,
           reason: undefined,
+          prev_state: prevState,
+          state: 'idle',
+          source_type: 'worker_idle',
         },
         cwd
       );
@@ -1718,13 +2123,28 @@ async function dispatchCriticalInboxInstruction(params: {
   workerName: string;
   workerIndex: number;
   paneId?: string;
+  workerCli?: TeamWorkerCli;
   inbox: string;
   triggerMessage: string;
   cwd: string;
   dispatchPolicy: TeamPolicy;
   inboxCorrelationKey: string;
+  requireWorkerStartupEvidence?: boolean;
 }): Promise<DispatchOutcome> {
-  const { teamName, config, workerName, workerIndex, paneId, inbox, triggerMessage, cwd, dispatchPolicy, inboxCorrelationKey } = params;
+  const {
+    teamName,
+    config,
+    workerName,
+    workerIndex,
+    paneId,
+    workerCli,
+    inbox,
+    triggerMessage,
+    cwd,
+    dispatchPolicy,
+    inboxCorrelationKey,
+    requireWorkerStartupEvidence,
+  } = params;
 
   if (config.worker_launch_mode === 'prompt') {
     return await queueInboxInstruction({
@@ -1778,8 +2198,30 @@ async function dispatchCriticalInboxInstruction(params: {
     timeoutMs: dispatchPolicy.dispatch_ack_timeout_ms,
     pollMs: 50,
   });
-  if (receipt && (receipt.status === 'notified' || receipt.status === 'delivered')) {
-    return { ok: true, transport: 'hook', reason: `hook_receipt_${receipt.status}`, request_id: queued.request_id };
+  if (receipt?.status === 'delivered') {
+    return { ok: true, transport: 'hook', reason: 'hook_receipt_delivered', request_id: queued.request_id };
+  }
+  const requiresObservedStartupEvidence = requireWorkerStartupEvidence === true
+    && (workerCli === 'claude' || workerCli === 'codex');
+  let startupEvidence: WorkerStartupEvidence = 'none';
+  if (receipt?.status === 'notified') {
+    if (!requiresObservedStartupEvidence) {
+      return { ok: true, transport: 'hook', reason: 'hook_receipt_notified', request_id: queued.request_id };
+    }
+    startupEvidence = await waitForWorkerStartupEvidence({
+      teamName,
+      workerName,
+      workerCli,
+      cwd,
+    });
+    if (startupEvidence !== 'none') {
+      return {
+        ok: true,
+        transport: 'hook',
+        reason: `hook_receipt_notified_with_${startupEvidence}`,
+        request_id: queued.request_id,
+      };
+    }
   }
   if (receipt?.status === 'failed') {
     const fallback = await notifyWorkerOutcome(config, workerIndex, triggerMessage, paneId);
@@ -1816,6 +2258,12 @@ async function dispatchCriticalInboxInstruction(params: {
   }
 
   const fallback = await notifyWorkerOutcome(config, workerIndex, triggerMessage, paneId);
+  const startupFallbackLabel = receipt?.status === 'notified' && requiresObservedStartupEvidence
+    ? `${workerCli}_startup_no_evidence`
+    : null;
+  const fallbackFailureReason = startupFallbackLabel
+    ? `${startupFallbackLabel}_fallback_failed:${fallback.reason}`
+    : `fallback_attempted_but_unconfirmed:${fallback.reason}`;
   if (fallback.ok) {
     const marked = await markDispatchRequestNotified(
       teamName,
@@ -1836,7 +2284,9 @@ async function dispatchCriticalInboxInstruction(params: {
     return {
       ok: true,
       transport: fallback.transport,
-      reason: `hook_timeout_fallback_confirmed:${fallback.reason}`,
+      reason: startupFallbackLabel
+        ? `${startupFallbackLabel}_fallback_confirmed:${fallback.reason}`
+        : `hook_timeout_fallback_confirmed:${fallback.reason}`,
       request_id: queued.request_id,
     };
   }
@@ -1848,14 +2298,14 @@ async function dispatchCriticalInboxInstruction(params: {
       queued.request_id,
       current.status,
       'failed',
-      { last_reason: `fallback_attempted_but_unconfirmed:${fallback.reason}` },
+      { last_reason: fallbackFailureReason },
       cwd,
     ).catch(() => {});
   }
   return {
     ok: false,
     transport: fallback.transport,
-    reason: `fallback_attempted_but_unconfirmed:${fallback.reason}`,
+    reason: fallbackFailureReason,
     request_id: queued.request_id,
   };
 }
@@ -2063,7 +2513,12 @@ async function deliverPendingMailboxMessages(
     if (!worker.alive) continue;
 
     for (const msg of unnotified) {
-      const triggerMessage = generateMailboxTriggerMessage(worker.name, teamName, 1);
+      const triggerMessage = generateMailboxTriggerMessage(
+        worker.name,
+        teamName,
+        1,
+        resolveInstructionStateRoot(workerInfo.worktree_path),
+      );
       const transportPreference = config.worker_launch_mode === 'prompt'
         ? 'prompt_stdin'
         : (dispatchPolicy.dispatch_mode === 'transport_direct' ? 'transport_direct' : 'hook_preferred_with_fallback');
@@ -2137,7 +2592,7 @@ export async function sendWorkerMessage(
   const manifest = await readTeamManifestV2(sanitized, cwd);
   const dispatchPolicy = resolveDispatchPolicy(manifest?.policy, config.worker_launch_mode);
   if (toWorker === 'leader-fixed') {
-    const leaderTriggerMessage = `Team ${sanitized}: new worker message for leader from ${fromWorker}`;
+    const leaderTriggerMessage = generateLeaderMailboxTriggerMessage(sanitized, fromWorker);
     const leaderTransportPreference = dispatchPolicy.dispatch_mode === 'transport_direct'
       ? 'transport_direct'
       : 'hook_preferred_with_fallback';
@@ -2199,7 +2654,12 @@ export async function sendWorkerMessage(
   const recipient = config.workers.find((w) => w.name === toWorker);
   if (!recipient) throw new Error(`Worker ${toWorker} not found in team`);
 
-  const triggerMessage = generateMailboxTriggerMessage(toWorker, sanitized, 1);
+  const triggerMessage = generateMailboxTriggerMessage(
+    toWorker,
+    sanitized,
+    1,
+    resolveInstructionStateRoot(recipient.worktree_path),
+  );
   const transportPreference = config.worker_launch_mode === 'prompt'
     ? 'prompt_stdin'
     : (dispatchPolicy.dispatch_mode === 'transport_direct' ? 'transport_direct' : 'hook_preferred_with_fallback');
@@ -2262,7 +2722,12 @@ export async function broadcastWorkerMessage(
     recipients: config.workers.map((w) => ({ workerName: w.name, workerIndex: w.index, paneId: w.pane_id })),
     body,
     cwd,
-    triggerFor: (workerName) => generateMailboxTriggerMessage(workerName, sanitized, 1),
+    triggerFor: (workerName) => generateMailboxTriggerMessage(
+      workerName,
+      sanitized,
+      1,
+      resolveInstructionStateRoot(config.workers.find((worker) => worker.name === workerName)?.worktree_path),
+    ),
     transportPreference,
     fallbackAllowed: transportPreference === 'hook_preferred_with_fallback',
     notify: async (target, message) =>
@@ -2296,7 +2761,12 @@ export async function broadcastWorkerMessage(
       workerIndex: target.index,
       paneId: target.pane_id,
       messageId: outcome.message_id,
-      triggerMessage: generateMailboxTriggerMessage(target.name, sanitized, 1),
+      triggerMessage: generateMailboxTriggerMessage(
+        target.name,
+        sanitized,
+        1,
+        resolveInstructionStateRoot(target.worktree_path),
+      ),
       config,
       dispatchPolicy,
       cwd,

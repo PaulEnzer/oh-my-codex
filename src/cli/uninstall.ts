@@ -14,6 +14,7 @@ import { getPackageRoot } from '../utils/package.js';
 import { AGENT_DEFINITIONS } from '../agents/definitions.js';
 import { resolveScopeDirectories, type SetupScope } from './setup.js';
 import { readPersistedSetupScope } from './index.js';
+import { isOmxGeneratedAgentsMd } from '../utils/agents-md.js';
 
 export interface UninstallOptions {
   dryRun?: boolean;
@@ -222,20 +223,14 @@ async function removeAgentConfigs(
 }
 
 async function removeAgentsMd(
-  projectRoot: string,
+  agentsMdPath: string,
   options: Pick<UninstallOptions, 'dryRun' | 'verbose'>,
 ): Promise<boolean> {
-  const agentsMdPath = join(projectRoot, 'AGENTS.md');
   if (!existsSync(agentsMdPath)) return false;
 
   try {
     const content = await readFile(agentsMdPath, 'utf-8');
-    // Only remove if it's the OMX-generated template (check for machine-parseable marker
-    // or the exact template title line to avoid false positives on user files)
-    const isOmxGenerated =
-      content.includes('# oh-my-codex - Intelligent Multi-Agent Orchestration') ||
-      content.includes('<!-- omx:generated:agents-md -->');
-    if (!isOmxGenerated) {
+    if (!isOmxGeneratedAgentsMd(content)) {
       if (options.verbose) console.log('  AGENTS.md is not OMX-generated, skipping.');
       return false;
     }
@@ -385,7 +380,10 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
 
   // Step 5: Remove AGENTS.md and optionally .omx/ cache directory
   console.log('[5/5] Cleaning up...');
-  summary.agentsMdRemoved = await removeAgentsMd(projectRoot, { dryRun, verbose });
+  const agentsMdPath = scope === 'project'
+    ? join(projectRoot, 'AGENTS.md')
+    : join(scopeDirs.codexHomeDir, 'AGENTS.md');
+  summary.agentsMdRemoved = await removeAgentsMd(agentsMdPath, { dryRun, verbose });
   if (purge) {
     summary.cacheDirectoryRemoved = await removeCacheDirectory(projectRoot, { dryRun, verbose });
   } else {

@@ -14,70 +14,16 @@
 
 Couche d'orchestration multi-agents pour [OpenAI Codex CLI](https://github.com/openai/codex).
 
-## Guides à la une
+## Nouveautés de la v0.9.0 — Spark Initiative
 
-- [Guide d’intégration OpenClaw / passerelle de notifications générique](./docs/openclaw-integration.fr.md)
+Spark Initiative est la version qui renforce la voie native d’exploration et d’inspection dans OMX.
 
-## Langues
+- **Harness natif pour `omx explore`** — exécute l’exploration read-only du dépôt via une voie Rust plus rapide et plus stricte.
+- **`omx sparkshell`** — surface native orientée opérateur, avec résumés de sorties longues et capture explicite de panneaux tmux.
+- **Artifacts natifs multiplateformes** — le chemin d’hydratation de `omx-explore-harness`, `omx-sparkshell` et `native-release-manifest.json` fait désormais partie du pipeline de release.
+- **CI/CD renforcé** — ajoute une configuration explicite de la toolchain Rust dans le job `build`, ainsi que `cargo fmt --check` et `cargo clippy -- -D warnings`.
 
-- [English](./README.md)
-- [한국어 (Korean)](./README.ko.md)
-- [日本語 (Japanese)](./README.ja.md)
-- [简体中文 (Chinese Simplified)](./README.zh.md)
-- [繁體中文 (Chinese Traditional)](./README.zh-TW.md)
-- [Tiếng Việt (Vietnamese)](./README.vi.md)
-- [Español (Spanish)](./README.es.md)
-- [Português (Portuguese)](./README.pt.md)
-- [Русский (Russian)](./README.ru.md)
-- [Türkçe (Turkish)](./README.tr.md)
-- [Deutsch (German)](./README.de.md)
-- [Français (French)](./README.fr.md)
-- [Italiano (Italian)](./README.it.md)
-
-
-OMX transforme Codex d'un agent mono-session en un système coordonné avec :
-- Des role prompts (`/prompts:name`) pour les agents spécialisés
-- Des workflow skills (`$name`) pour les modes d'exécution reproductibles
-- L'orchestration d'équipe dans tmux (`omx team`, `$team`)
-- Un état et une mémoire persistants via les serveurs MCP
-
-## Pourquoi OMX
-
-Codex CLI est performant pour les tâches directes. OMX ajoute de la structure pour les travaux plus importants :
-- Décomposition et exécution par étapes (`team-plan -> team-prd -> team-exec -> team-verify -> team-fix`)
-- État persistant du cycle de vie des modes (`.omx/state/`)
-- Surfaces de mémoire et notepad pour les sessions longue durée
-- Contrôles opérationnels pour le lancement, la vérification et l'annulation
-
-OMX est un add-on, pas un fork. Il utilise les points d'extension natifs de Codex.
-
-## Prérequis
-
-- macOS ou Linux (Windows via WSL2)
-- Node.js >= 20
-- Codex CLI installé (`npm install -g @openai/codex`)
-- Authentification Codex configurée
-
-## Démarrage rapide (3 minutes)
-
-```bash
-npm install -g oh-my-codex
-omx setup
-omx doctor
-```
-
-Profil de lancement recommandé pour les environnements de confiance :
-
-```bash
-omx --xhigh --madmax
-```
-
-## Nouveautés de la v0.5.0
-
-- **Configuration sensible au scope** avec `omx setup --scope user|project` pour des modes d'installation flexibles.
-- **Routage Spark worker** via `--spark` / `--madmax-spark` pour que les workers d'équipe puissent utiliser `gpt-5.3-codex-spark` sans forcer le modèle leader.
-- **Consolidation du catalogue** — suppression des prompts obsolètes (`deep-executor`, `scientist`) et de 9 skills obsolètes.
-- **Niveaux de verbosité des notifications** pour un contrôle fin de la sortie CCNotifier.
+Voir aussi les [notes de version v0.9.0](./docs/release-notes-0.9.0.md) et le [corps de release](./docs/release-body-0.9.0.md).
 
 ## Première session
 
@@ -116,7 +62,7 @@ User
 
 ```bash
 omx                # Lancer Codex (+ HUD dans tmux si disponible)
-omx setup          # Installer prompts/skills/config par scope + projet AGENTS.md/.omx
+omx setup          # Installer prompts/skills/config par scope + .omx du projet + AGENTS.md propre au scope
 omx doctor         # Diagnostics d'installation/exécution
 omx doctor --team  # Diagnostics Team/Swarm
 omx team ...       # Démarrer/statut/reprendre/arrêter les workers d'équipe tmux
@@ -175,7 +121,7 @@ Par défaut, OMX injecte :
 -c model_instructions_file="<cwd>/AGENTS.md"
 ```
 
-Cela superpose les instructions `AGENTS.md` du projet dans les instructions de lancement de Codex.
+Cela fusionne le `AGENTS.md` de `CODEX_HOME` avec le `AGENTS.md` du projet (s'il existe), puis ajoute l'overlay d'exécution.
 Cela étend le comportement de Codex, mais ne remplace/contourne pas les politiques système de base de Codex.
 
 Contrôles :
@@ -240,10 +186,11 @@ Notes :
 
 - `.omx/setup-scope.json` (scope de setup persisté)
 - Installations dépendantes du scope :
-  - `user` : `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`
-  - `project` : `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`
+  - `user` : `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
+  - `project` : `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
 - Comportement au lancement : si le scope persisté est `project`, le lancement `omx` utilise automatiquement `CODEX_HOME=./.codex` (sauf si `CODEX_HOME` est déjà défini).
-- Le `AGENTS.md` existant est préservé par défaut. Lors des exécutions TTY interactives, setup demande confirmation avant d'écraser ; `--force` écrase sans demander (les vérifications de sécurité de session active s'appliquent toujours).
+- Les instructions de lancement fusionnent `~/.codex/AGENTS.md` (ou `CODEX_HOME/AGENTS.md` s'il est redéfini) avec `./AGENTS.md` du projet, puis ajoutent l'overlay d'exécution.
+- Les fichiers `AGENTS.md` existants ne sont jamais écrasés silencieusement : en TTY interactif, setup demande avant de remplacer ; en non-interactif, le remplacement est ignoré sauf avec `--force` (les vérifications de sécurité de session active s'appliquent toujours).
 - Mises à jour de `config.toml` (pour les deux scopes) :
   - `notify = ["node", "..."]`
   - `model_reasoning_effort = "high"`
@@ -251,7 +198,7 @@ Notes :
   - `[features] multi_agent = true, child_agents_md = true`
   - Entrées de serveurs MCP (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`)
   - `[tui] status_line`
-- `AGENTS.md` du projet
+- `AGENTS.md` spécifique au scope
 - Répertoires d'exécution `.omx/` et configuration HUD
 
 ## Agents et Skills

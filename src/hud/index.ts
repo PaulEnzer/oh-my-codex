@@ -12,9 +12,18 @@
 import { execFileSync } from 'child_process';
 import { readAllState, readHudConfig } from './state.js';
 import { renderHud } from './render.js';
-import type { HudFlags, HudPreset, HudRenderContext } from './types.js';
+import type { HudFlags, HudPreset, HudRenderContext, ResolvedHudConfig } from './types.js';
 import { HUD_TMUX_HEIGHT_LINES } from './constants.js';
 import { sleep } from '../utils/sleep.js';
+
+export const HUD_USAGE = [
+  'Usage:',
+  '  omx hud              Show current HUD state',
+  '  omx hud --watch      Poll every 1s with terminal clear',
+  '  omx hud --json       Output raw state as JSON',
+  '  omx hud --preset=X   Use preset: minimal, focused, full',
+  '  omx hud --tmux       Open HUD in a tmux split pane (auto-detects orientation)',
+].join('\n');
 
 type SleepFn = (ms: number, signal?: AbortSignal) => Promise<void>;
 
@@ -48,8 +57,8 @@ export async function watchRenderLoop(
 interface RunWatchModeDependencies {
   isTTY: boolean;
   env: NodeJS.ProcessEnv;
-  readAllStateFn: (cwd: string) => Promise<HudRenderContext>;
-  readHudConfigFn: (cwd: string) => Promise<{ preset: HudPreset }>;
+  readAllStateFn: (cwd: string, config?: ResolvedHudConfig) => Promise<HudRenderContext>;
+  readHudConfigFn: (cwd: string) => Promise<ResolvedHudConfig>;
   renderHudFn: (ctx: HudRenderContext, preset: HudPreset) => string;
   writeStdout: (text: string) => void;
   writeStderr: (text: string) => void;
@@ -121,10 +130,8 @@ export async function runWatchMode(
       } else {
         dependencies.writeStdout('\x1b[H');
       }
-      const [ctx, config] = await Promise.all([
-        dependencies.readAllStateFn(cwd),
-        dependencies.readHudConfigFn(cwd),
-      ]);
+      const config = await dependencies.readHudConfigFn(cwd);
+      const ctx = await dependencies.readAllStateFn(cwd, config);
       const preset = flags.preset ?? config.preset;
       const line = dependencies.renderHudFn(ctx, preset);
       dependencies.writeStdout(line + '\x1b[K\n\x1b[J');
@@ -184,10 +191,8 @@ function parseFlags(args: string[]): HudFlags {
 }
 
 async function renderOnce(cwd: string, flags: HudFlags): Promise<void> {
-  const [ctx, config] = await Promise.all([
-    readAllState(cwd),
-    readHudConfig(cwd),
-  ]);
+  const config = await readHudConfig(cwd);
+  const ctx = await readAllState(cwd, config);
 
   const preset = flags.preset ?? config.preset;
 
@@ -200,6 +205,11 @@ async function renderOnce(cwd: string, flags: HudFlags): Promise<void> {
 }
 
 export async function hudCommand(args: string[]): Promise<void> {
+  if (args[0] === '--help' || args[0] === '-h') {
+    console.log(HUD_USAGE);
+    return;
+  }
+
   const flags = parseFlags(args);
   const cwd = process.cwd();
 
@@ -222,10 +232,8 @@ export async function hudCommand(args: string[]): Promise<void> {
     } else {
       process.stdout.write('\x1b[H'); // Move cursor to top-left (no clear)
     }
-    const [ctx, config] = await Promise.all([
-      readAllState(cwd),
-      readHudConfig(cwd),
-    ]);
+    const config = await readHudConfig(cwd);
+    const ctx = await readAllState(cwd, config);
     const preset = flags.preset ?? config.preset;
     const line = renderHud(ctx, preset);
     process.stdout.write(line + '\x1b[K\n\x1b[J'); // Write line, clear rest of line + below

@@ -5,7 +5,6 @@
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -15,7 +14,7 @@ import { readFile, readdir } from 'fs/promises';
 import { join, relative, extname, basename, resolve } from 'path';
 import { existsSync } from 'fs';
 import { promisify } from 'util';
-import { shouldAutoStartMcpServer } from './bootstrap.js';
+import { autoStartStdioMcpServer } from './bootstrap.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -176,7 +175,8 @@ function extractSymbols(content: string): DocumentSymbol[] {
 async function findSgBinary(): Promise<string | null> {
   for (const bin of ['sg', 'ast-grep']) {
     try {
-      await execFileAsync('which', [bin]);
+      const finder = process.platform === 'win32' ? 'where' : 'which';
+      await execFileAsync(finder, [bin]);
       return bin;
     } catch (err) {
       process.stderr.write(`[code-intel-server] operation failed: ${err}\n`);
@@ -658,7 +658,4 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-if (shouldAutoStartMcpServer('code_intel')) {
-  const transport = new StdioServerTransport();
-  server.connect(transport).catch(console.error);
-}
+autoStartStdioMcpServer('code_intel', server);

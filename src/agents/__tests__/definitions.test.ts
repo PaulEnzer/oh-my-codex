@@ -33,6 +33,7 @@ describe('agents/definitions', () => {
     const buildAgents = getAgentsByCategory('build');
     assert.ok(buildAgents.length > 0);
     assert.ok(buildAgents.some((agent) => agent.name === 'executor'));
+    assert.ok(buildAgents.some((agent) => agent.name === 'team-executor'));
 
     const allowed: AgentDefinition['category'][] = [
       'build',

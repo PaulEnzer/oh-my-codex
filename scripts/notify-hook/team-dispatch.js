@@ -4,7 +4,14 @@ import { dirname, join, resolve } from 'path';
 import { safeString } from './utils.js';
 import { runProcess } from './process-runner.js';
 import { resolvePaneTarget } from './tmux-injection.js';
-import { buildCapturePaneArgv, buildPaneInModeArgv, buildSendKeysArgv } from '../tmux-hook-engine.js';
+import { evaluatePaneInjectionReadiness, sendPaneInput } from './team-tmux-guard.js';
+import {
+  buildCapturePaneArgv,
+  buildSendKeysArgv,
+  normalizeTmuxCapture,
+  paneHasActiveTask,
+  paneLooksReady,
+} from '../tmux-hook-engine.js';
 
 function readJson(path, fallback) {
   return readFile(path, 'utf8')
@@ -27,6 +34,21 @@ const DEFAULT_DISPATCH_TRIGGER_COOLDOWN_MS = 30 * 1000;
 const DISPATCH_TRIGGER_COOLDOWN_ENV = 'OMX_TEAM_DISPATCH_TRIGGER_COOLDOWN_MS';
 const LEADER_PANE_MISSING_DEFERRED_REASON = 'leader_pane_missing_deferred';
 const LEADER_NOTIFICATION_DEFERRED_TYPE = 'leader_notification_deferred';
+
+async function emitOperationalHookEvent(cwd, eventName, context) {
+  try {
+    const { buildNativeHookEvent } = await import('../../dist/hooks/extensibility/events.js');
+    const { dispatchHookEvent } = await import('../../dist/hooks/extensibility/dispatcher.js');
+    const event = buildNativeHookEvent(eventName, {
+      normalized_event: eventName,
+      scope: 'team-dispatch',
+      ...context,
+    });
+    await dispatchHookEvent(event, { cwd });
+  } catch {
+    // best effort only
+  }
+}
 
 function resolveIssueDispatchCooldownMs(env = process.env) {
   const raw = safeString(env[ISSUE_DISPATCH_COOLDOWN_ENV]).trim();
@@ -209,6 +231,9 @@ async function appendLeaderNotificationDeferredEvent({
   request,
   reason,
   nowIso,
+  tmuxSession = '',
+  leaderPaneId = '',
+  sourceType = 'team_dispatch',
 }) {
   const eventsDir = join(stateDir, 'team', teamName, 'events');
   const eventsPath = join(eventsDir, 'events.ndjson');
@@ -222,6 +247,10 @@ async function appendLeaderNotificationDeferredEvent({
     created_at: nowIso,
     request_id: request.request_id,
     ...(request.message_id ? { message_id: request.message_id } : {}),
+    tmux_session: tmuxSession || null,
+    leader_pane_id: leaderPaneId || null,
+    tmux_injection_attempted: false,
+    source_type: sourceType,
   };
   await mkdir(eventsDir, { recursive: true }).catch(() => {});
   await appendFile(eventsPath, JSON.stringify(event) + '\n').catch(() => {});
@@ -238,18 +267,14 @@ function resolveWorkerCliForRequest(request, config) {
   return 'codex';
 }
 
-function normalizeCaptureText(value) {
-  return safeString(value).replace(/\r/g, '').replace(/\s+/g, ' ').trim();
-}
-
 function capturedPaneContainsTrigger(captured, trigger) {
   if (!captured || !trigger) return false;
-  return normalizeCaptureText(captured).includes(normalizeCaptureText(trigger));
+  return normalizeTmuxCapture(captured).includes(normalizeTmuxCapture(trigger));
 }
 
 function capturedPaneContainsTriggerNearTail(captured, trigger, nonEmptyTailLines = 24) {
   if (!captured || !trigger) return false;
-  const normalizedTrigger = normalizeCaptureText(trigger);
+  const normalizedTrigger = normalizeTmuxCapture(trigger);
   if (!normalizedTrigger) return false;
   const lines = safeString(captured)
     .split('\n')
@@ -257,57 +282,7 @@ function capturedPaneContainsTriggerNearTail(captured, trigger, nonEmptyTailLine
     .filter((line) => line.length > 0);
   if (lines.length === 0) return false;
   const tail = lines.slice(-Math.max(1, nonEmptyTailLines)).join(' ');
-  return normalizeCaptureText(tail).includes(normalizedTrigger);
-}
-
-// Ported from src/team/tmux-session.ts:949-963 — detects active CLI task indicators.
-function paneHasActiveTask(captured) {
-  const lines = safeString(captured)
-    .split('\n')
-    .map((line) => line.replace(/\r/g, '').trim())
-    .filter((line) => line.length > 0);
-  const tail = lines.slice(-40);
-  if (tail.some((line) => /\b\d+\s+background terminal running\b/i.test(line))) return true;
-  if (tail.some((line) => /esc to interrupt/i.test(line))) return true;
-  if (tail.some((line) => /\bbackground terminal running\b/i.test(line))) return true;
-  if (tail.some((line) => /^•\s.+\(.+•\s*esc to interrupt\)$/i.test(line))) return true;
-  // Claude active generation lines
-  if (tail.some((line) => /^[·✻]\s+[A-Za-z][A-Za-z0-9''-]*(?:\s+[A-Za-z][A-Za-z0-9''-]*){0,3}(?:…|\.{3})$/u.test(line))) return true;
-  return false;
-}
-
-function paneIsBootstrapping(captured) {
-  const lines = safeString(captured)
-    .split('\n')
-    .map((line) => line.replace(/\r/g, '').trim())
-    .filter((line) => line.length > 0);
-  return lines.some((line) =>
-    /\b(loading|initializing|starting up)\b/i.test(line)
-    || /\bmodel:\s*loading\b/i.test(line)
-    || /\bconnecting\s+to\b/i.test(line),
-  );
-}
-
-function paneLooksReady(captured) {
-  const content = safeString(captured).trimEnd();
-  if (content === '') return false;
-
-  const lines = content
-    .split('\n')
-    .map((line) => line.replace(/\r/g, ''))
-    .map((line) => line.trimEnd())
-    .filter((line) => line.trim() !== '');
-
-  if (paneIsBootstrapping(content)) return false;
-
-  const lastLine = lines.length > 0 ? lines[lines.length - 1] : '';
-  if (/^\s*[›>❯]\s*/u.test(lastLine)) return true;
-
-  const hasCodexPromptLine = lines.some((line) => /^\s*›\s*/u.test(line));
-  const hasClaudePromptLine = lines.some((line) => /^\s*❯\s*/u.test(line));
-  if (hasCodexPromptLine || hasClaudePromptLine) return true;
-
-  return false;
+  return normalizeTmuxCapture(tail).includes(normalizedTrigger);
 }
 
 const INJECT_VERIFY_DELAY_MS = 250;
@@ -322,13 +297,14 @@ async function injectDispatchRequest(request, config, cwd) {
   if (!resolution.paneTarget) {
     return { ok: false, reason: `target_resolution_failed:${resolution.reason}` };
   }
-  try {
-    const inMode = await runProcess('tmux', buildPaneInModeArgv(resolution.paneTarget), 1000);
-    if (safeString(inMode.stdout).trim() === '1') {
-      return { ok: false, reason: 'scroll_active' };
-    }
-  } catch {
-    // best effort
+  const paneGuard = await evaluatePaneInjectionReadiness(resolution.paneTarget, {
+    skipIfScrolling: true,
+    requireRunningAgent: false,
+    requireReady: false,
+    requireIdle: false,
+  });
+  if (!paneGuard.ok) {
+    return { ok: false, reason: paneGuard.reason };
   }
 
   const argv = buildSendKeysArgv({
@@ -361,7 +337,14 @@ async function injectDispatchRequest(request, config, cwd) {
       await runProcess('tmux', ['send-keys', '-t', resolution.paneTarget, 'C-u'], 1000).catch(() => {});
       await new Promise((r) => setTimeout(r, 50));
     }
-    await runProcess('tmux', argv.typeArgv, 3000);
+    const typeResult = await sendPaneInput({
+      paneTarget: resolution.paneTarget,
+      prompt: request.trigger_message,
+      submitKeyPresses: 0,
+    });
+    if (!typeResult.ok) {
+      return { ok: false, reason: typeResult.reason };
+    }
   }
 
   for (const submit of argv.submitArgv) {
@@ -414,7 +397,8 @@ async function injectDispatchRequest(request, config, cwd) {
 
 function shouldSkipRequest(request) {
   if (request.status !== 'pending') return true;
-  return request.transport_preference !== 'hook_preferred_with_fallback';
+  const preference = safeString(request.transport_preference).trim();
+  return preference !== '' && preference !== 'hook_preferred_with_fallback';
 }
 
 async function updateMailboxNotified(stateDir, teamName, workerName, messageId) {
@@ -433,6 +417,7 @@ async function updateMailboxNotified(stateDir, teamName, workerName, messageId) 
 
 async function appendDispatchLog(logsDir, event) {
   const path = join(logsDir, `team-dispatch-${new Date().toISOString().slice(0, 10)}.jsonl`);
+  await mkdir(logsDir, { recursive: true }).catch(() => {});
   await appendFile(path, `${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`).catch(() => {});
 }
 
@@ -486,29 +471,39 @@ export async function drainPendingTeamDispatch({
 
         if (request.to_worker === 'leader-fixed' && !safeString(config?.leader_pane_id).trim()) {
           const nowIso = new Date().toISOString();
+          const alreadyDeferred = safeString(request.last_reason).trim() === LEADER_PANE_MISSING_DEFERRED_REASON;
           request.updated_at = nowIso;
           request.last_reason = LEADER_PANE_MISSING_DEFERRED_REASON;
           request.status = 'pending';
           skipped += 1;
           mutated = true;
-          await appendDispatchLog(logsDir, {
-            type: 'dispatch_deferred',
-            team: teamName,
-            request_id: request.request_id,
-            worker: request.to_worker,
-            to_worker: request.to_worker,
-            message_id: request.message_id || null,
-            reason: LEADER_PANE_MISSING_DEFERRED_REASON,
-            status: 'pending',
-            tmux_injection_attempted: false,
-          });
-          await appendLeaderNotificationDeferredEvent({
-            stateDir,
-            teamName,
-            request,
-            reason: LEADER_PANE_MISSING_DEFERRED_REASON,
-            nowIso,
-          });
+          if (!alreadyDeferred) {
+            await appendDispatchLog(logsDir, {
+              type: 'dispatch_deferred',
+              team: teamName,
+              request_id: request.request_id,
+              worker: request.to_worker,
+              to_worker: request.to_worker,
+              message_id: request.message_id || null,
+              reason: LEADER_PANE_MISSING_DEFERRED_REASON,
+              status: 'pending',
+              tmux_session: safeString(config?.tmux_session).trim() || null,
+              leader_pane_id: safeString(config?.leader_pane_id).trim() || null,
+              tmux_injection_attempted: false,
+            });
+            // Requests JSON is the canonical queue state; this event is a progress artifact
+            // for hook/watcher readers until shared readers normalize everything later.
+            await appendLeaderNotificationDeferredEvent({
+              stateDir,
+              teamName,
+              request,
+              reason: LEADER_PANE_MISSING_DEFERRED_REASON,
+              nowIso,
+              tmuxSession: safeString(config?.tmux_session).trim(),
+              leaderPaneId: safeString(config?.leader_pane_id).trim(),
+              sourceType: 'team_dispatch',
+            });
+          }
           continue;
         }
 
@@ -565,6 +560,15 @@ export async function drainPendingTeamDispatch({
               attempt: request.attempt_count,
               reason: result.reason,
             });
+            await emitOperationalHookEvent(cwd, 'retry-needed', {
+              team: teamName,
+              worker: request.to_worker,
+              request_id: request.request_id,
+              attempt: request.attempt_count,
+              command: request.trigger_message,
+              reason: result.reason,
+              status: 'retry-needed',
+            });
             continue;
           }
           if (result.reason === 'tmux_send_keys_unconfirmed') {
@@ -581,6 +585,16 @@ export async function drainPendingTeamDispatch({
               worker: request.to_worker,
               message_id: request.message_id || null,
               reason: request.last_reason,
+            });
+            await emitOperationalHookEvent(cwd, 'failed', {
+              team: teamName,
+              worker: request.to_worker,
+              request_id: request.request_id,
+              message_id: request.message_id || null,
+              command: request.trigger_message,
+              reason: request.last_reason,
+              error_summary: request.last_reason,
+              status: 'failed',
             });
             continue;
           }
@@ -614,6 +628,17 @@ export async function drainPendingTeamDispatch({
             worker: request.to_worker,
             message_id: request.message_id || null,
             reason: result.reason,
+          });
+          await emitOperationalHookEvent(cwd, result.reason === LEADER_PANE_MISSING_DEFERRED_REASON ? 'handoff-needed' : 'failed', {
+            team: teamName,
+            worker: request.to_worker,
+            request_id: request.request_id,
+            message_id: request.message_id || null,
+            command: request.trigger_message,
+            reason: result.reason,
+            ...(result.reason === LEADER_PANE_MISSING_DEFERRED_REASON
+              ? { status: 'handoff-needed' }
+              : { status: 'failed', error_summary: result.reason }),
           });
         }
       }

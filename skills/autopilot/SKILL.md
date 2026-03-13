@@ -35,6 +35,10 @@ Most non-trivial software tasks require coordinated phases: understanding requir
 - If a deep-interview spec exists, use it as high-clarity phase input instead of re-expanding from scratch
 - If input is too vague for reliable expansion, offer/trigger `$deep-interview` first
 - Do not enter expansion/planning/execution-heavy phases until pre-context grounding exists; if fast execution is forced, proceed only with explicit risk notes
+- Default to concise, evidence-dense progress and completion reporting unless the user or risk level requires more detail
+- Treat newer user task updates as local overrides for the active workflow branch while preserving earlier non-conflicting constraints
+- If correctness depends on additional inspection, retrieval, execution, or verification, keep using the relevant tools until the workflow is grounded
+- Continue through clear, low-risk, reversible next steps automatically; ask only when the next step is materially branching, destructive, or preference-dependent
 </Execution_Policy>
 
 <Steps>
@@ -112,6 +116,15 @@ Use `omx_state` MCP tools for autopilot lifecycle state.
   `state_write({mode: "autopilot", active: false, current_phase: "complete", completed_at: "<now>"})`
 - **On cancellation/cleanup**:
   run `$cancel` (which should call `state_clear(mode="autopilot")`)
+
+
+## Scenario Examples
+
+**Good:** The user says `continue` after the workflow already has a clear next step. Continue the current branch of work instead of restarting or re-asking the same question.
+
+**Good:** The user changes only the output shape or downstream delivery step (for example `make a PR`). Preserve earlier non-conflicting workflow constraints and apply the update locally.
+
+**Bad:** The user says `continue`, and the workflow restarts discovery or stops before the missing verification/evidence is gathered.
 
 <Examples>
 <Good>

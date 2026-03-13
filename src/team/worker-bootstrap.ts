@@ -2,6 +2,7 @@ import type { TeamTask } from './state.js';
 import { mkdir, readFile, rm, stat, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
 import { getFixLoopInstructions, getVerificationInstructions } from '../verification/verifier.js';
+import { codexHome } from '../utils/paths.js';
 import { sleep } from '../utils/sleep.js';
 
 const TEAM_OVERLAY_START = '<!-- OMX:TEAM:WORKER:START -->';
@@ -82,6 +83,7 @@ CRITICAL: Never omit from_worker. The MCP server cannot auto-detect your identit
 When your mailbox receives a message, process delivery explicitly:
 1. Read: \`omx team api mailbox-list --input "{\"team_name\":\"${teamName}\",\"worker\":\"<your-worker-name>\"}" --json\`
 2. Mark delivered: \`omx team api mailbox-mark-delivered --input "{\"team_name\":\"${teamName}\",\"worker\":\"<your-worker-name>\",\"message_id\":\"<MESSAGE_ID>\"}" --json\`
+3. If you reply, include concrete progress and keep executing your assigned work or the next feasible task after replying.
 
 ## Rules
 - Do NOT edit files outside the paths listed in your task description
@@ -144,9 +146,9 @@ function stripOverlayFromContent(content: string): string {
 }
 
 /**
- * Write a team-scoped model instructions file that composes the project's
- * AGENTS.md (if any) with the worker overlay. This avoids mutating the
- * project's AGENTS.md directly.
+ * Write a team-scoped model instructions file that composes user-level
+ * CODEX_HOME AGENTS.md, the project's AGENTS.md (if any), and the worker
+ * overlay. This avoids mutating the source AGENTS.md files directly.
  *
  * Returns the absolute path to the composed file.
  */
@@ -155,21 +157,68 @@ export async function writeTeamWorkerInstructionsFile(
   cwd: string,
   overlay: string,
 ): Promise<string> {
-  const projectAgentsPath = join(cwd, 'AGENTS.md');
-  let base = '';
-  try {
-    base = await readFile(projectAgentsPath, 'utf-8');
-    // Strip any stale overlays from the base content
-    base = stripOverlayFromContent(base);
-  } catch {
-    // No project AGENTS.md -- compose with overlay only
+  const baseParts: string[] = [];
+  const sourcePaths = [
+    join(codexHome(), 'AGENTS.md'),
+    join(cwd, 'AGENTS.md'),
+  ];
+  const seenPaths = new Set<string>();
+
+  for (const sourcePath of sourcePaths) {
+    if (seenPaths.has(sourcePath)) continue;
+    seenPaths.add(sourcePath);
+
+    let content = '';
+    try {
+      content = await readFile(sourcePath, 'utf-8');
+    } catch {
+      continue;
+    }
+
+    content = stripOverlayFromContent(content).trim();
+    if (!content) continue;
+    baseParts.push(content);
   }
 
+  const base = baseParts.join('\n\n');
   const composed = base.trim().length > 0
-    ? `${base.trimEnd()}\n\n${overlay}\n`
+    ? `${base}\n\n${overlay}\n`
     : `${overlay}\n`;
 
   const outPath = join(cwd, '.omx', 'state', 'team', teamName, 'worker-agents.md');
+  await mkdir(dirname(outPath), { recursive: true });
+  await writeFile(outPath, composed);
+  return outPath;
+}
+
+/**
+ * Compose a per-worker startup instructions file by layering the team worker
+ * instructions with the resolved role prompt content.
+ */
+export async function writeWorkerRoleInstructionsFile(
+  teamName: string,
+  workerName: string,
+  cwd: string,
+  baseInstructionsPath: string,
+  workerRole: string,
+  rolePromptContent: string,
+): Promise<string> {
+  const base = await readFile(baseInstructionsPath, 'utf-8').catch(() => '');
+  const roleOverlay = `
+<!-- OMX:TEAM:ROLE:START -->
+<team_worker_role>
+You are operating as the **${workerRole}** role for this team run. Apply the following role-local guidance in addition to the team worker protocol.
+
+${rolePromptContent.trim()}
+</team_worker_role>
+<!-- OMX:TEAM:ROLE:END -->
+`;
+  const composed = base.trim().length > 0
+    ? `${base.trimEnd()}
+
+${roleOverlay}`
+    : roleOverlay.trimStart();
+  const outPath = join(cwd, '.omx', 'state', 'team', teamName, 'workers', workerName, 'AGENTS.md');
   await mkdir(dirname(outPath), { recursive: true });
   await writeFile(outPath, composed);
   return outPath;
@@ -331,6 +380,7 @@ When you are notified about mailbox messages, always follow this exact flow:
    \`omx team api mailbox-mark-delivered --input "{\"team_name\":\"${teamName}\",\"worker\":\"${workerName}\",\"message_id\":\"<MESSAGE_ID>\"}" --json\`
 
 Use terse ACK bodies (single line) for consistent parsing across Codex and Claude workers.
+After any mailbox reply, continue executing your assigned work or the next feasible task; do not stop after sending the reply.
 
 ## Message Protocol
 When using \`omx team api send-message\`, ALWAYS include from_worker with YOUR worker name:
@@ -404,19 +454,52 @@ Type \`exit\` or press Ctrl+C to end your Codex session.
 `;
 }
 
+function buildInstructionPath(...parts: string[]): string {
+  return join(...parts).replaceAll('\\', '/');
+}
+
 /**
  * Generate the SHORT send-keys trigger message.
  * Always < 200 characters, ASCII-safe.
  */
-export function generateTriggerMessage(workerName: string, teamName: string): string {
-  return `Read and follow the instructions in .omx/state/team/${teamName}/workers/${workerName}/inbox.md`;
+export function generateTriggerMessage(
+  workerName: string,
+  teamName: string,
+  teamStateRoot: string = '.omx/state',
+): string {
+  const inboxPath = buildInstructionPath(teamStateRoot, 'team', teamName, 'workers', workerName, 'inbox.md');
+  if (teamStateRoot !== '.omx/state') {
+    return `Read ${inboxPath}, work now, report progress, continue assigned work or next feasible task.`;
+  }
+  return `Read ${inboxPath}, start work now, report concrete progress, then continue assigned work or next feasible task.`;
 }
 
 /**
  * Generate a SHORT trigger for mailbox notifications.
  * Always < 200 characters, ASCII-safe.
  */
-export function generateMailboxTriggerMessage(workerName: string, teamName: string, count: number): string {
+export function generateMailboxTriggerMessage(
+  workerName: string,
+  teamName: string,
+  count: number,
+  teamStateRoot: string = '.omx/state',
+): string {
   const n = Number.isFinite(count) ? Math.max(1, Math.floor(count)) : 1;
-  return `You have ${n} new message(s). Check .omx/state/team/${teamName}/mailbox/${workerName}.json`;
+  const mailboxPath = buildInstructionPath(teamStateRoot, 'team', teamName, 'mailbox', workerName + '.json');
+  if (teamStateRoot !== '.omx/state') {
+    return `${n} new msg(s): read ${mailboxPath}, act, report progress, continue assigned work or next feasible task.`;
+  }
+  return `You have ${n} new message(s). Read ${mailboxPath}, act now, reply with concrete progress, then continue assigned work or next feasible task.`;
+}
+
+export function generateLeaderMailboxTriggerMessage(
+  teamName: string,
+  fromWorker: string,
+  teamStateRoot: string = '.omx/state',
+): string {
+  const mailboxPath = buildInstructionPath(teamStateRoot, 'team', teamName, 'mailbox', 'leader-fixed.json');
+  if (teamStateRoot !== '.omx/state') {
+    return `Read ${mailboxPath}; new msg from ${fromWorker}. Reply next step.`;
+  }
+  return `Read ${mailboxPath}; ${fromWorker} sent a new message. Reply with the next concrete step.`;
 }

@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-03-06T17:35:58.237Z",
+  "generatedAt": "2026-03-10T10:43:36.374Z",
   "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 38,
-    "promptCount": 29,
-    "activeSkillCount": 22,
-    "activeAgentCount": 14
+    "skillCount": 39,
+    "promptCount": 30,
+    "activeSkillCount": 23,
+    "activeAgentCount": 18
   },
   "coreSkills": [
     "autopilot",
@@ -92,8 +92,8 @@
     {
       "name": "analyze",
       "category": "shortcut",
-      "status": "active",
-      "surface": "public_task_intent",
+      "status": "alias",
+      "canonical": "debugger",
       "core": false,
       "internalRequired": false
     },
@@ -122,10 +122,16 @@
       "internalRequired": false
     },
     {
+      "name": "ai-slop-cleaner",
+      "category": "shortcut",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
       "name": "code-review",
       "category": "shortcut",
       "status": "active",
-      "surface": "public_task_intent",
       "canonical": "code-reviewer",
       "core": false,
       "internalRequired": false
@@ -133,9 +139,8 @@
     {
       "name": "security-review",
       "category": "shortcut",
-      "status": "deprecated",
-      "surface": "public_compatibility",
-      "canonical": "code-review",
+      "status": "active",
+      "canonical": "security-reviewer",
       "core": false,
       "internalRequired": false
     },
@@ -174,8 +179,7 @@
     {
       "name": "review",
       "category": "shortcut",
-      "status": "deprecated",
-      "surface": "public_compatibility",
+      "status": "alias",
       "canonical": "plan --review",
       "core": false,
       "internalRequired": false
@@ -324,19 +328,22 @@
     {
       "name": "architect",
       "category": "build",
-      "status": "internal",
-      "surface": "internal_expert"
+      "status": "active"
     },
     {
       "name": "debugger",
       "category": "build",
-      "status": "internal",
-      "surface": "internal_expert"
+      "status": "active"
     },
     {
       "name": "executor",
       "category": "build",
       "status": "active"
+    },
+    {
+      "name": "team-executor",
+      "category": "build",
+      "status": "internal"
     },
     {
       "name": "verifier",
@@ -347,41 +354,35 @@
       "name": "style-reviewer",
       "category": "review",
       "status": "merged",
-      "surface": "hidden_compatibility",
       "canonical": "code-reviewer"
     },
     {
       "name": "quality-reviewer",
       "category": "review",
       "status": "merged",
-      "surface": "hidden_compatibility",
       "canonical": "code-reviewer"
     },
     {
       "name": "api-reviewer",
       "category": "review",
       "status": "merged",
-      "surface": "hidden_compatibility",
       "canonical": "code-reviewer"
     },
     {
       "name": "security-reviewer",
       "category": "review",
-      "status": "internal",
-      "surface": "internal_expert"
+      "status": "active"
     },
     {
       "name": "performance-reviewer",
       "category": "review",
       "status": "merged",
-      "surface": "hidden_compatibility",
       "canonical": "code-reviewer"
     },
     {
       "name": "code-reviewer",
       "category": "review",
-      "status": "internal",
-      "surface": "internal_expert"
+      "status": "active"
     },
     {
       "name": "dependency-expert",
@@ -462,8 +463,7 @@
     {
       "name": "critic",
       "category": "coordination",
-      "status": "active",
-      "surface": "public_agent"
+      "status": "active"
     },
     {
       "name": "vision",
@@ -485,6 +485,10 @@
       "canonical": "team"
     },
     {
+      "name": "analyze",
+      "canonical": "debugger"
+    },
+    {
       "name": "deepsearch",
       "canonical": "explore"
     },
@@ -503,6 +507,10 @@
     {
       "name": "git-master",
       "canonical": "git-master"
+    },
+    {
+      "name": "review",
+      "canonical": "plan --review"
     },
     {
       "name": "configure-discord",

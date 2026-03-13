@@ -136,6 +136,16 @@ describe('Consensus mode execution handoff (plan/SKILL.md)', () => {
     assert.ok(consensusSection.includes('**Follow-ups**'), 'ADR should include Follow-ups');
   });
 
+  it('should require available-agent-types roster and staffing guidance in handoff output', () => {
+    const consensusSection = extractSection(planSkill, 'Consensus Mode');
+    assert.ok(consensusSection, 'Consensus Mode section should exist');
+    assert.match(consensusSection, /available-agent-types roster/i);
+    assert.match(consensusSection, /staffing guidance|role allocation/i);
+    assert.match(consensusSection, /reasoning levels? by lane|suggested reasoning/i);
+    assert.match(consensusSection, /omx team|launch hint/i);
+    assert.match(consensusSection, /team -> ralph verification path|team -> ralph/i);
+  });
+
   it('should mention deliberate mode requirements in consensus mode', () => {
     const consensusSection = extractSection(planSkill, 'Consensus Mode');
     assert.ok(consensusSection, 'Consensus Mode section should exist');
@@ -262,6 +272,14 @@ describe('RALPLAN-DR in ralplan/SKILL.md', () => {
       'ralplan/SKILL.md should reference ADR requirement'
     );
   });
+
+  it('should document roster-aware team and ralph follow-up guidance', () => {
+    assert.match(ralplanSkill, /available-agent-types roster/i);
+    assert.match(ralplanSkill, /staffing guidance|role\/staffing allocation/i);
+    assert.match(ralplanSkill, /reasoning levels? by lane|reasoning-by-lane/i);
+    assert.match(ralplanSkill, /omx team|launch hints?/i);
+    assert.match(ralplanSkill, /team -> ralph/i);
+  });
 });
 
 describe('Architect prompt RALPLAN-DR sections', () => {
@@ -291,6 +309,16 @@ describe('Architect prompt RALPLAN-DR sections', () => {
       architectPrompt.includes('ralplan'),
       'architect.md should reference ralplan consensus reviews'
     );
+  });
+});
+
+describe('Planner prompt follow-up staffing guidance', () => {
+  it('should require roster-aware staffing guidance for team and ralph handoff', () => {
+    assert.match(plannerPrompt, /available-agent-types roster/i);
+    assert.match(plannerPrompt, /team and ralph follow-up paths/i);
+    assert.match(plannerPrompt, /reasoning levels? by lane|suggested reasoning/i);
+    assert.match(plannerPrompt, /launch hints?/i);
+    assert.match(plannerPrompt, /team -> ralph/i);
   });
 });
 

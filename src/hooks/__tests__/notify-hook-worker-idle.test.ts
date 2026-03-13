@@ -129,6 +129,98 @@ describe('notify-hook per-worker idle notification', () => {
       const event = events.find((entry: { type?: string; reason?: string }) =>
         entry.type === 'leader_notification_deferred' && entry.reason === 'leader_pane_missing_no_injection');
       assert.ok(event, 'should emit deferred event with missing-pane reason');
+      assert.equal(event.to_worker, 'leader-fixed');
+      assert.equal(event.source_type, 'worker_idle');
+      assert.equal(event.tmux_session, 'devsess:0');
+      assert.equal(event.leader_pane_id, null);
+      assert.equal(event.tmux_injection_attempted, false);
+    });
+  });
+
+
+  it('does not inject worker-idle notification into a shell leader pane', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const logsDir = join(cwd, '.omx', 'logs');
+      const teamName = 'shell-idle-team';
+      const teamDir = join(stateDir, 'team', teamName);
+      const workersDir = join(teamDir, 'workers');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'devsess:21',
+        leader_pane_id: '%79',
+        workers: [
+          { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
+        ],
+      });
+
+      await writeJson(join(workersDir, 'worker-1', 'status.json'), {
+        state: 'idle',
+        current_task_id: 'task-42',
+        reason: 'task complete',
+        updated_at: new Date().toISOString(),
+      });
+      await writeJson(join(workersDir, 'worker-1', 'prev-notify-state.json'), {
+        state: 'working',
+        updated_at: new Date(Date.now() - 5000).toISOString(),
+      });
+
+      const fakeTmux = `#!/usr/bin/env bash
+set -eu
+echo "$@" >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  target=""
+  format=""
+  while (($#)); do
+    case "$1" in
+      -p) shift ;;
+      -t) target="$2"; shift 2 ;;
+      *) format="$1"; shift ;;
+    esac
+  done
+  if [[ "$format" == "#{pane_current_command}" && "$target" == "%79" ]]; then
+    echo "zsh"
+  fi
+  exit 0
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  echo "%1 12345"
+  exit 0
+fi
+exit 0
+`;
+      await writeFile(fakeTmuxPath, fakeTmux);
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHookAsWorker(cwd, fakeBinDir, `${teamName}/worker-1`);
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /display-message -p -t %79 #\{pane_current_command\}/);
+      assert.doesNotMatch(tmuxLog, /send-keys -t %79/, 'should not inject worker-idle into a shell pane');
+
+      const eventsPath = join(teamDir, 'events', 'events.ndjson');
+      const events = (await readFile(eventsPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      const deferred = events.find((entry: { type?: string; reason?: string }) =>
+        entry.type === 'leader_notification_deferred' && entry.reason === 'leader_pane_shell_no_injection');
+      assert.ok(deferred, 'should emit deferred shell-pane event');
+      assert.equal(deferred.pane_current_command, 'zsh');
+
+      const cooldown = JSON.parse(await readFile(join(workersDir, 'worker-1', 'worker-idle-notify.json'), 'utf-8'));
+      assert.equal(cooldown.delivery, 'deferred_shell');
+      assert.equal(cooldown.pane_current_command, 'zsh');
     });
   });
 
@@ -615,6 +707,7 @@ describe('notify-hook per-worker idle notification', () => {
       assert.ok(existsSync(tmuxLogPath), 'tmux should have been called for unknown->idle');
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /worker-1 idle/, 'should fire on unknown->idle transition');
+      assert.match(tmuxLog, /Next: read worker-1's latest message\/output, then assign the next concrete step or mark the task complete/, 'per-worker idle nudge should include a next action');
     });
   });
 
@@ -710,7 +803,9 @@ describe('notify-hook per-worker idle notification', () => {
       assert.ok(existsSync(tmuxLogPath), 'tmux should have been called');
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /worker-1 idle/, 'per-worker idle should fire');
+      assert.match(tmuxLog, /Next: read worker-1's latest message\/output, then assign the next concrete step or mark the task complete/, 'per-worker idle nudge should include a next action');
       assert.match(tmuxLog, /All 1 worker idle/, 'all-workers-idle should also fire');
+      assert.match(tmuxLog, /Next: run omx team status both-hooks, check unread worker messages, then assign the next concrete task or shut the team down/, 'all-workers-idle nudge should include a next action');
     });
   });
 });

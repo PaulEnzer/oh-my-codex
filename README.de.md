@@ -14,70 +14,16 @@
 
 Multi-Agenten-Orchestrierungsschicht für [OpenAI Codex CLI](https://github.com/openai/codex).
 
-## Empfohlene Leitfäden
+## Neu in v0.9.0 — Spark Initiative
 
-- [OpenClaw-Integrationsleitfaden für generisches Notification-Gateway](./docs/openclaw-integration.de.md)
+Spark Initiative ist das Release, das den nativen Pfad für Exploration und Inspektion in OMX stärkt.
 
-## Sprachen
+- **Nativer Harness für `omx explore`** — führt Read-only-Repository-Exploration über einen schnelleren und strengeren Rust-Pfad aus.
+- **`omx sparkshell`** — native Operator-Oberfläche für Inspektion mit Zusammenfassungen langer Ausgaben und expliziter tmux-Pane-Erfassung.
+- **Plattformübergreifende native Release-Artefakte** — der Hydration-Pfad für `omx-explore-harness`, `omx-sparkshell` und `native-release-manifest.json` ist jetzt Teil der Release-Pipeline.
+- **Gehärtetes CI/CD** — ergänzt ein explizites Rust-Toolchain-Setup im `build`-Job sowie `cargo fmt --check` und `cargo clippy -- -D warnings`.
 
-- [English](./README.md)
-- [한국어 (Korean)](./README.ko.md)
-- [日本語 (Japanese)](./README.ja.md)
-- [简体中文 (Chinese Simplified)](./README.zh.md)
-- [繁體中文 (Chinese Traditional)](./README.zh-TW.md)
-- [Tiếng Việt (Vietnamese)](./README.vi.md)
-- [Español (Spanish)](./README.es.md)
-- [Português (Portuguese)](./README.pt.md)
-- [Русский (Russian)](./README.ru.md)
-- [Türkçe (Turkish)](./README.tr.md)
-- [Deutsch (German)](./README.de.md)
-- [Français (French)](./README.fr.md)
-- [Italiano (Italian)](./README.it.md)
-
-
-OMX verwandelt Codex von einem Einzelsitzungs-Agenten in ein koordiniertes System mit:
-- Role Prompts (`/prompts:name`) für spezialisierte Agenten
-- Workflow Skills (`$name`) für wiederholbare Ausführungsmodi
-- Team-Orchestrierung in tmux (`omx team`, `$team`)
-- Persistenter Zustand und Speicher über MCP-Server
-
-## Warum OMX
-
-Codex CLI ist stark für direkte Aufgaben. OMX fügt Struktur für größere Arbeiten hinzu:
-- Zerlegung und stufenweise Ausführung (`team-plan -> team-prd -> team-exec -> team-verify -> team-fix`)
-- Persistenter Modus-Lebenszyklus-Zustand (`.omx/state/`)
-- Speicher- und Notepad-Oberflächen für langfristige Sitzungen
-- Operationelle Steuerung für Start, Verifizierung und Abbruch
-
-OMX ist ein Add-on, kein Fork. Es nutzt die nativen Erweiterungspunkte von Codex.
-
-## Voraussetzungen
-
-- macOS oder Linux (Windows über WSL2)
-- Node.js >= 20
-- Codex CLI installiert (`npm install -g @openai/codex`)
-- Codex-Authentifizierung konfiguriert
-
-## Schnellstart (3 Minuten)
-
-```bash
-npm install -g oh-my-codex
-omx setup
-omx doctor
-```
-
-Empfohlenes Startprofil für vertrauenswürdige Umgebungen:
-
-```bash
-omx --xhigh --madmax
-```
-
-## Neu in v0.5.0
-
-- **Bereichsbewusstes Setup** mit `omx setup --scope user|project` für flexible Installationsmodi.
-- **Spark-Worker-Routing** über `--spark` / `--madmax-spark`, damit Team-Worker `gpt-5.3-codex-spark` nutzen können, ohne das Leader-Modell zu erzwingen.
-- **Katalog-Konsolidierung** — veraltete Prompts (`deep-executor`, `scientist`) und 9 veraltete Skills entfernt.
-- **Benachrichtigungs-Detailstufen** für feingranulare CCNotifier-Ausgabesteuerung.
+Siehe auch die [Release Notes zu v0.9.0](./docs/release-notes-0.9.0.md) und den [Release-Text](./docs/release-body-0.9.0.md).
 
 ## Erste Sitzung
 
@@ -116,7 +62,7 @@ User
 
 ```bash
 omx                # Codex starten (+ HUD in tmux wenn verfügbar)
-omx setup          # Prompts/Skills/Config nach Bereich installieren + Projekt AGENTS.md/.omx
+omx setup          # Prompts/Skills/Config nach Bereich installieren + Projekt-.omx + bereichsspezifische AGENTS.md
 omx doctor         # Installations-/Laufzeitdiagnose
 omx doctor --team  # Team/Swarm-Diagnose
 omx team ...       # tmux-Team-Worker starten/Status/fortsetzen/herunterfahren
@@ -175,7 +121,7 @@ Standardmäßig injiziert OMX:
 -c model_instructions_file="<cwd>/AGENTS.md"
 ```
 
-Dies schichtet die `AGENTS.md`-Anweisungen des Projekts in die Codex-Startanweisungen.
+Dies kombiniert `AGENTS.md` aus `CODEX_HOME` mit dem Projekt-`AGENTS.md` (falls vorhanden) und legt dann die Laufzeit-Überlagerung darüber.
 Es erweitert das Codex-Verhalten, ersetzt/umgeht aber nicht die Codex-Kernsystemrichtlinien.
 
 Steuerung:
@@ -240,10 +186,11 @@ Hinweise:
 
 - `.omx/setup-scope.json` (persistierter Setup-Bereich)
 - Bereichsabhängige Installationen:
-  - `user`: `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`
-  - `project`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`
+  - `user`: `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
+  - `project`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
 - Startverhalten: Wenn der persistierte Bereich `project` ist, verwendet `omx` automatisch `CODEX_HOME=./.codex` (sofern `CODEX_HOME` nicht bereits gesetzt ist).
-- Vorhandene `AGENTS.md` wird standardmäßig beibehalten. Bei interaktiven TTY-Läufen fragt Setup vor dem Überschreiben; `--force` überschreibt ohne Nachfrage (aktive Sitzungs-Sicherheitsprüfungen gelten weiterhin).
+- Startanweisungen kombinieren `~/.codex/AGENTS.md` (bzw. `CODEX_HOME/AGENTS.md`, wenn überschrieben) mit dem Projekt-`./AGENTS.md` und hängen anschließend die Runtime-Überlagerung an.
+- Vorhandene `AGENTS.md`-Dateien werden nie stillschweigend überschrieben: Interaktive TTY-Läufe fragen vor dem Ersetzen, nicht-interaktive Läufe überspringen das Ersetzen ohne `--force` (aktive Sitzungs-Sicherheitsprüfungen gelten weiterhin).
 - `config.toml`-Aktualisierungen (für beide Bereiche):
   - `notify = ["node", "..."]`
   - `model_reasoning_effort = "high"`
@@ -251,7 +198,7 @@ Hinweise:
   - `[features] multi_agent = true, child_agents_md = true`
   - MCP-Server-Einträge (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`)
   - `[tui] status_line`
-- Projekt-`AGENTS.md`
+- Bereichsspezifische `AGENTS.md`
 - `.omx/`-Laufzeitverzeichnisse und HUD-Konfiguration
 
 ## Agenten und Skills

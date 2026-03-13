@@ -178,6 +178,62 @@ export function isPaneRunningShell(paneCurrentCommand) {
   return SHELL_COMMANDS.has(base);
 }
 
+export function normalizeTmuxCapture(value) {
+  return String(value ?? '')
+    .replace(/\r/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizePaneLines(capturedOrLines) {
+  if (Array.isArray(capturedOrLines)) {
+    return capturedOrLines
+      .map((line) => String(line ?? '').replace(/\r/g, '').trimEnd())
+      .filter((line) => line.trim() !== '');
+  }
+
+  return String(capturedOrLines ?? '')
+    .split('\n')
+    .map((line) => line.replace(/\r/g, '').trimEnd())
+    .filter((line) => line.trim() !== '');
+}
+
+export function paneIsBootstrapping(capturedOrLines) {
+  const lines = normalizePaneLines(capturedOrLines);
+  return lines.some((line) =>
+    /\b(loading|initializing|starting up)\b/i.test(line)
+    || /\bmodel:\s*loading\b/i.test(line)
+    || /\bconnecting\s+to\b/i.test(line)
+  );
+}
+
+export function paneLooksReady(captured) {
+  const content = String(captured ?? '').trimEnd();
+  if (content === '') return false;
+
+  const lines = normalizePaneLines(content);
+
+  if (paneIsBootstrapping(lines)) return false;
+
+  const lastLine = lines.length > 0 ? lines[lines.length - 1] : '';
+  if (/^\s*[›>❯]\s*/u.test(lastLine)) return true;
+
+  const hasCodexPromptLine = lines.some((line) => /^\s*›\s*/u.test(line));
+  const hasClaudePromptLine = lines.some((line) => /^\s*❯\s*/u.test(line));
+  if (hasCodexPromptLine || hasClaudePromptLine) return true;
+
+  return lines.some((line) => /^\s*(?:[›>❯]\s*)?[A-Z][A-Z0-9]+-\d+\s+only(?:\s*(?:…|\.{3}))?\s*$/iu.test(line));
+}
+
+export function paneHasActiveTask(captured) {
+  const tail = normalizePaneLines(captured).map((line) => line.trim()).slice(-40);
+  if (tail.some((line) => /\b\d+\s+background terminal running\b/i.test(line))) return true;
+  if (tail.some((line) => /esc to interrupt/i.test(line))) return true;
+  if (tail.some((line) => /\bbackground terminal running\b/i.test(line))) return true;
+  if (tail.some((line) => /^•\s.+\(.+•\s*esc to interrupt\)$/i.test(line))) return true;
+  return tail.some((line) => /^[·✻]\s+[A-Za-z][A-Za-z0-9'’-]*(?:\s+[A-Za-z][A-Za-z0-9'’-]*){0,3}(?:…|\.{3})$/u.test(line));
+}
+
 export function buildCapturePaneArgv(paneTarget, tailLines = 80) {
   return ['capture-pane', '-t', paneTarget, '-p', '-S', `-${tailLines}`];
 }

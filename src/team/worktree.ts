@@ -98,6 +98,18 @@ function branchExists(repoRoot: string, branchName: string): boolean {
   return result.status === 0;
 }
 
+function isWorktreeDirty(worktreePath: string): boolean {
+  const result = spawnSync('git', ['status', '--porcelain'], {
+    cwd: worktreePath,
+    encoding: 'utf-8',
+  });
+  if (result.status !== 0) {
+    const stderr = (result.stderr || '').trim();
+    throw new Error(stderr || `worktree_status_failed:${worktreePath}`);
+  }
+  return (result.stdout || '').trim() !== '';
+}
+
 function listWorktrees(repoRoot: string): GitWorktreeEntry[] {
   const raw = readGit(repoRoot, ['worktree', 'list', '--porcelain']);
   if (!raw) return [];
@@ -303,6 +315,10 @@ export function ensureWorktree(plan: PlannedWorktreeTarget | { enabled: false })
       }
     } else if (existingAtPath.branchRef !== expectedBranchRef) {
       throw new Error(`worktree_target_mismatch:${plan.worktreePath}`);
+    }
+
+    if (isWorktreeDirty(plan.worktreePath)) {
+      throw new Error(`worktree_dirty:${plan.worktreePath}`);
     }
 
     return {

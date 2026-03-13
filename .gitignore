@@ -11,3 +11,11 @@ dist/
 # Local agent/worktree artifacts (never commit)
 .claude/
 .claire/
+.codex/
+.agents/
+coverage/
+target/
+bin/native/
+bin/omx-explore-harness
+bin/omx-explore-harness.exe
+bin/omx-explore-harness.meta.json

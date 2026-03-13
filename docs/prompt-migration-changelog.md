@@ -4,7 +4,7 @@
 
 - Migration window: `e21cb5e` -> `ff7ee14`
 - Surface: `prompts/*.md` (30 files)
-- Goal: adapt prompt authoring style from XML-like wrappers to Codex-friendly Markdown while preserving role intent and operational constraints.
+- Goal: document the prior XML-to-Markdown migration while reaffirming that prompt files remain the canonical XML-tagged subagent role surfaces for OMX.
 
 ## Global Changes (Applied to All Prompt Files)
 
@@ -12,6 +12,7 @@
 - Replaced wrapper tags such as `<Agent_Prompt>`, `<Role>`, `<Constraints>`, `<Output_Format>`, `<Final_Checklist>` with Markdown section headings.
 - Flattened nested XML-like sections into readable Markdown bullets/numbered steps.
 - Kept role semantics, tool usage intent, guardrails, and checklist expectations functionally equivalent.
+- Important current-state clarification: although the prompt text is now Markdown-first, each file in `prompts/*.md` is still the canonical XML-tagged subagent role surface consumed by OMX install/generation flows.
 
 ## Behavior Notes
 
@@ -143,3 +144,9 @@ Skill docs are operational runbooks. The migration focused on:
 - `skills/omx-setup/SKILL.md`: largest edit surface; includes team enablement guidance (`~/.codex/config.toml` `[features]` flags) and teammate display preference storage (`~/.codex/.omx-config.json`).
 - `skills/doctor/SKILL.md`: updated hook/config inspection language; still contains optional legacy remediation guidance.
 - `skills/autopilot/SKILL.md`, `skills/research/SKILL.md`, `skills/ultrapilot/SKILL.md`: config examples updated to TOML.
+
+## Follow-up Classification Notes
+
+- `prompts/*.md` should be treated as the canonical source set for XML-tagged subagent role prompts, even when install/runtime layers wrap them in TOML or other launcher-specific envelopes.
+- `prompts/sisyphus-lite.md` is intentionally classified as a specialized worker behavior prompt. It is not part of the primary public role catalog alongside prompts such as `executor`, `planner`, or `architect`.
+- Team worker/runtime overlays may borrow Sisyphus-lite behavior patterns, but that does not promote it to a first-class routed role.

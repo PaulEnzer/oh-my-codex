@@ -7,6 +7,10 @@
  */
 
 import type { PipelineStage, StageContext, StageResult } from '../types.js';
+import {
+  buildFollowupStaffingPlan,
+  resolveAvailableAgentTypes,
+} from '../../team/followup-planner.js';
 
 export interface TeamExecStageOptions {
   /** Number of Codex CLI workers to launch. Defaults to 2. */
@@ -46,12 +50,19 @@ export function createTeamExecStage(options: TeamExecStageOptions = {}): Pipelin
         const planContext = ralplanArtifacts
           ? `Plan from RALPLAN stage:\n${JSON.stringify(ralplanArtifacts, null, 2)}\n\nTask: ${ctx.task}`
           : ctx.task;
+        const availableAgentTypes = await resolveAvailableAgentTypes(ctx.cwd);
+        const staffingPlan = buildFollowupStaffingPlan('team', ctx.task, availableAgentTypes, {
+          workerCount,
+          fallbackRole: agentType,
+        });
 
         // Build team execution descriptor
         const teamDescriptor: TeamExecDescriptor = {
           task: planContext,
           workerCount,
           agentType,
+          availableAgentTypes,
+          staffingPlan,
           useWorktrees: options.useWorktrees ?? false,
           cwd: ctx.cwd,
           extraEnv: options.extraEnv,
@@ -63,6 +74,8 @@ export function createTeamExecStage(options: TeamExecStageOptions = {}): Pipelin
             teamDescriptor,
             workerCount,
             agentType,
+            availableAgentTypes,
+            staffingPlan,
             stage: 'team-exec',
             instruction: buildTeamInstruction(teamDescriptor),
           },
@@ -91,6 +104,8 @@ export interface TeamExecDescriptor {
   task: string;
   workerCount: number;
   agentType: string;
+  availableAgentTypes: string[];
+  staffingPlan: ReturnType<typeof buildFollowupStaffingPlan>;
   useWorktrees: boolean;
   cwd: string;
   extraEnv?: Record<string, string>;
@@ -100,8 +115,6 @@ export interface TeamExecDescriptor {
  * Build the `omx team` CLI instruction from a descriptor.
  */
 export function buildTeamInstruction(descriptor: TeamExecDescriptor): string {
-  const parts = ['omx', 'team'];
-  parts.push(`${descriptor.workerCount}:${descriptor.agentType}`);
-  parts.push(JSON.stringify(descriptor.task.slice(0, 500)));
-  return parts.join(' ');
+  const launchCommand = `omx team ralph ${descriptor.workerCount}:${descriptor.agentType} ${JSON.stringify(descriptor.task)}`;
+  return `${launchCommand} # staffing=${descriptor.staffingPlan.staffingSummary} # verify=${descriptor.staffingPlan.verificationPlan.summary}`;
 }

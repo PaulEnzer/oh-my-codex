@@ -112,6 +112,28 @@ describe('worktree ensure + rollback', () => {
     }
   });
 
+  it('rejects reusing a dirty worktree', async () => {
+    const repo = await initRepo();
+    try {
+      const planned = planWorktreeTarget({
+        cwd: repo,
+        scope: 'launch',
+        mode: { enabled: true, detached: true, name: null },
+      });
+      assert.equal(planned.enabled, true);
+      if (!planned.enabled) return;
+
+      const created = ensureWorktree(planned);
+      assert.equal(created.enabled, true);
+      if (!created.enabled) return;
+
+      await writeFile(join(created.worktreePath, 'DIRTY.txt'), 'dirty\n', 'utf-8');
+      assert.throws(() => ensureWorktree(planned), /worktree_dirty/);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it('creates per-worker named branch and blocks branch-in-use collisions', async () => {
     const repo = await initRepo();
     try {

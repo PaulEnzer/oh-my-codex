@@ -16,6 +16,7 @@ import {
   applyOverlay,
   stripOverlay,
   hasOverlay,
+  resolveSessionOrchestrationMode,
   writeSessionModelInstructionsFile,
   removeSessionModelInstructionsFile,
   sessionModelInstructionsPath,
@@ -32,6 +33,15 @@ async function makeTempDir(): Promise<string> {
   return dir;
 }
 
+function setMockCodexHome(codexHomePath: string): () => void {
+  const previous = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = codexHomePath;
+  return () => {
+    if (typeof previous === 'string') process.env.CODEX_HOME = previous;
+    else delete process.env.CODEX_HOME;
+  };
+}
+
 describe('generateOverlay', () => {
   let tempDir: string;
   before(async () => { tempDir = await makeTempDir(); });
@@ -43,6 +53,33 @@ describe('generateOverlay', () => {
     assert.ok(overlay.includes('<!-- OMX:RUNTIME:END -->'));
     assert.ok(overlay.includes('test-session-1'));
     assert.ok(overlay.includes('Compaction Protocol'));
+  });
+
+  it('includes the team orchestrator overlay only when orchestration mode is team', async () => {
+    const overlay = await generateOverlay(tempDir, 'team-session', { orchestrationMode: 'team' });
+    assert.match(overlay, /\*\*Orchestration Mode:\*\* team/);
+    assert.match(overlay, /supervised, high-overhead coordination surface/i);
+
+    const defaultOverlay = await generateOverlay(tempDir, 'default-session', { orchestrationMode: 'default' });
+    assert.doesNotMatch(defaultOverlay, /\*\*Orchestration Mode:\*\* team/);
+  });
+
+  it('adds advisory explore routing guidance only when USE_OMX_EXPLORE_CMD is enabled', async () => {
+    const previous = process.env.USE_OMX_EXPLORE_CMD;
+    try {
+      delete process.env.USE_OMX_EXPLORE_CMD;
+      const disabledOverlay = await generateOverlay(tempDir, 'explore-routing-off');
+      assert.doesNotMatch(disabledOverlay, /\*\*Explore Command Preference:\*\*/);
+
+      process.env.USE_OMX_EXPLORE_CMD = '1';
+      const enabledOverlay = await generateOverlay(tempDir, 'explore-routing-on');
+      assert.match(enabledOverlay, /\*\*Explore Command Preference:\*\* enabled via `USE_OMX_EXPLORE_CMD`/);
+      assert.match(enabledOverlay, /strongly prefer `omx explore`/);
+      assert.match(enabledOverlay, /advisory steering/i);
+    } finally {
+      if (typeof previous === 'string') process.env.USE_OMX_EXPLORE_CMD = previous;
+      else delete process.env.USE_OMX_EXPLORE_CMD;
+    }
   });
 
   it('generates overlay with active modes', async () => {
@@ -188,6 +225,73 @@ describe('generateOverlay', () => {
     const overlay = await generateOverlay(tempDir, sessionId);
     assert.match(overlay, /\*\*Ralph Ralplan-First Gate:\*\* UNLOCKED/);
     assert.match(overlay, /Planning artifacts present: PRD \+ test spec/);
+  });
+});
+
+describe('resolveSessionOrchestrationMode', () => {
+  let tempDir: string;
+
+  before(async () => { tempDir = await makeTempDir(); });
+  after(async () => { await rm(tempDir, { recursive: true, force: true }); });
+
+  it('uses explicit activeSkill when provided', async () => {
+    const mode = await resolveSessionOrchestrationMode(tempDir, 'sess-explicit', 'team');
+    assert.equal(mode, 'team');
+  });
+
+  it('reads persisted team skill state from the current session scope', async () => {
+    const sessionId = 'sess-team';
+    const sessionDir = join(tempDir, '.omx', 'state', 'sessions', sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(sessionDir, 'skill-active-state.json'),
+      JSON.stringify({ active: true, skill: 'team' }),
+    );
+
+    const mode = await resolveSessionOrchestrationMode(tempDir, sessionId);
+    assert.equal(mode, 'team');
+  });
+
+  it('falls back to default mode for non-team skill state', async () => {
+    const sessionId = 'sess-autopilot';
+    const sessionDir = join(tempDir, '.omx', 'state', 'sessions', sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(sessionDir, 'skill-active-state.json'),
+      JSON.stringify({ active: true, skill: 'autopilot' }),
+    );
+
+    const mode = await resolveSessionOrchestrationMode(tempDir, sessionId);
+    assert.equal(mode, 'default');
+  });
+
+  it('does not resurrect stale root team skill state when session-scoped skill state is inactive', async () => {
+    const sessionId = 'sess-team-complete';
+    const rootStatePath = join(tempDir, '.omx', 'state', 'skill-active-state.json');
+    const sessionDir = join(tempDir, '.omx', 'state', 'sessions', sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      rootStatePath,
+      JSON.stringify({ active: true, skill: 'team' }),
+    );
+    await writeFile(
+      join(sessionDir, 'skill-active-state.json'),
+      JSON.stringify({ active: false, skill: 'team', phase: 'completing' }),
+    );
+
+    const mode = await resolveSessionOrchestrationMode(tempDir, sessionId);
+    assert.equal(mode, 'default');
+  });
+
+  it('falls back to root team skill state only when no session-scoped skill state exists', async () => {
+    const sessionId = 'sess-root-fallback';
+    await writeFile(
+      join(tempDir, '.omx', 'state', 'skill-active-state.json'),
+      JSON.stringify({ active: true, skill: 'team' }),
+    );
+
+    const mode = await resolveSessionOrchestrationMode(tempDir, sessionId);
+    assert.equal(mode, 'team');
   });
 });
 
@@ -362,12 +466,22 @@ ${WORKER_END}
 
 describe('session-scoped model instructions file', () => {
   let tempDir: string;
+  let restoreCodexHome: (() => void) | undefined;
 
-  before(async () => { tempDir = await makeTempDir(); });
-  after(async () => { await rm(tempDir, { recursive: true, force: true }); });
+  before(async () => {
+    tempDir = await makeTempDir();
+    restoreCodexHome = setMockCodexHome(join(tempDir, 'home', '.codex'));
+  });
+  after(async () => {
+    restoreCodexHome?.();
+    await rm(tempDir, { recursive: true, force: true });
+  });
 
-  it('writes project AGENTS.md + runtime overlay into session-scoped file', async () => {
+  it('writes user + project AGENTS.md + runtime overlay into session-scoped file', async () => {
+    const userAgentsMd = join(tempDir, 'home', '.codex', 'AGENTS.md');
     const projectAgentsMd = join(tempDir, 'AGENTS.md');
+    await mkdir(join(tempDir, 'home', '.codex'), { recursive: true });
+    await writeFile(userAgentsMd, '# User instructions\n\nStart globally.\n');
     const projectContent = '# Project instructions\n\nStay in scope.\n';
     await writeFile(projectAgentsMd, projectContent);
 
@@ -377,12 +491,18 @@ describe('session-scoped model instructions file', () => {
     const projectAfter = await readFile(projectAgentsMd, 'utf-8');
 
     assert.equal(writtenPath, sessionModelInstructionsPath(tempDir, 'session-a'));
+    assert.match(sessionContent, /# User instructions/);
     assert.match(sessionContent, /# Project instructions/);
+    assert.ok(
+      sessionContent.indexOf('# User instructions') <
+      sessionContent.indexOf('# Project instructions'),
+    );
     assert.match(sessionContent, /<!-- OMX:RUNTIME:START -->/);
     assert.equal(projectAfter, projectContent);
   });
 
-  it('writes overlay-only session file when project AGENTS.md is missing', async () => {
+  it('writes overlay-only session file when no base AGENTS.md files exist', async () => {
+    await rm(join(tempDir, 'home'), { recursive: true, force: true });
     await rm(join(tempDir, 'AGENTS.md'), { force: true });
     const overlay = await generateOverlay(tempDir, 'session-b');
     const writtenPath = await writeSessionModelInstructionsFile(tempDir, 'session-b', overlay);

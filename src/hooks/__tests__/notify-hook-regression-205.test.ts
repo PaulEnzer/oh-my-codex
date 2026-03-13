@@ -4,21 +4,93 @@
  * - resolveTeamStateDirForWorker must be exported from team-worker.js
  * - DEFAULT_STALL_PATTERNS must contain 'if you want'
  * - detectStallPattern must match 'if you want'
+ * - notify-hook end-to-end auto-nudge must still inject for 'if you want'
  */
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, rm, mkdir } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS_DIR = join(__dirname, '..', '..', '..', 'scripts');
+const NOTIFY_HOOK_SCRIPT = new URL('../../../scripts/notify-hook.js', import.meta.url);
 
 async function loadModule(rel: string) {
   return import(pathToFileURL(join(SCRIPTS_DIR, rel)).href);
+}
+
+async function withTempWorkingDir(run: (cwd: string) => Promise<void>): Promise<void> {
+  const cwd = await mkdtemp(join(tmpdir(), 'omx-regression-205-'));
+  try {
+    await run(cwd);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+}
+
+async function writeJson(path: string, value: unknown): Promise<void> {
+  await writeFile(path, JSON.stringify(value, null, 2));
+}
+
+function buildFakeTmux(tmuxLogPath: string): string {
+  return `#!/usr/bin/env bash
+set -eu
+echo "$@" >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "capture-pane" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "display-message" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  echo "%1 12345"
+  exit 0
+fi
+exit 0
+`;
+}
+
+function runNotifyHook(
+  cwd: string,
+  fakeBinDir: string,
+  codexHome: string,
+  payloadOverrides: Record<string, unknown> = {},
+) {
+  const payload = {
+    cwd,
+    type: 'agent-turn-complete',
+    'thread-id': 'thread-test',
+    'turn-id': `turn-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    'input-messages': ['test'],
+    'last-assistant-message': 'done',
+    ...payloadOverrides,
+  };
+
+  return spawnSync(process.execPath, [NOTIFY_HOOK_SCRIPT.pathname, JSON.stringify(payload)], {
+    encoding: 'utf8',
+    timeout: 15_000,
+    env: {
+      ...process.env,
+      PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+      CODEX_HOME: codexHome,
+      TMUX_PANE: '%99',
+      TMUX: '1',
+      OMX_TEAM_WORKER: '',
+      OMX_TEAM_LEADER_NUDGE_MS: '9999999',
+      OMX_TEAM_LEADER_STALE_MS: '9999999',
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -35,6 +107,8 @@ describe('regression-205: DEFAULT_STALL_PATTERNS contains "if you want"', () => 
       DEFAULT_STALL_PATTERNS.includes('if you want'),
       `Expected DEFAULT_STALL_PATTERNS to contain "if you want", got: ${JSON.stringify(DEFAULT_STALL_PATTERNS)}`,
     );
+    assert.ok(DEFAULT_STALL_PATTERNS.includes('i\'m ready to'));
+    assert.ok(DEFAULT_STALL_PATTERNS.includes('keep going'));
   });
 });
 
@@ -58,12 +132,79 @@ describe('regression-205: detectStallPattern matches "if you want"', () => {
     );
   });
 
+  it('ignores OMX injection-marker lines when matching patterns', async () => {
+    const { detectStallPattern, DEFAULT_STALL_PATTERNS } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(
+      detectStallPattern('keep going [OMX_TMUX_INJECT]', DEFAULT_STALL_PATTERNS),
+      false,
+    );
+  });
+
   it('does not false-positive on unrelated text', async () => {
     const { detectStallPattern, DEFAULT_STALL_PATTERNS } = await loadModule('notify-hook/auto-nudge.js');
     assert.equal(
       detectStallPattern('Build succeeded. All tests pass.', DEFAULT_STALL_PATTERNS),
       false,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// notify-hook.js – "if you want" still triggers the injection path end-to-end
+// ---------------------------------------------------------------------------
+describe('regression-205: notify-hook still injects on "if you want"', () => {
+  let originalTeamWorker: string | undefined;
+  let originalTeamStateRoot: string | undefined;
+
+  before(() => {
+    originalTeamWorker = process.env.OMX_TEAM_WORKER;
+    originalTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    delete process.env.OMX_TEAM_WORKER;
+    delete process.env.OMX_TEAM_STATE_ROOT;
+  });
+
+  after(() => {
+    if (originalTeamWorker === undefined) delete process.env.OMX_TEAM_WORKER;
+    else process.env.OMX_TEAM_WORKER = originalTeamWorker;
+    if (originalTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+    else process.env.OMX_TEAM_STATE_ROOT = originalTeamStateRoot;
+  });
+
+  it('sends the default auto-nudge response with marker and submit keys', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const logsDir = join(cwd, '.omx', 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0 },
+      });
+
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'I checked the files. If you want, I can keep going and apply the fix.',
+      });
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+      assert.ok(existsSync(tmuxLogPath), 'expected tmux to be called');
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8');
+      assert.match(
+        tmuxLog,
+        /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/,
+        'expected default auto-nudge response to be injected',
+      );
+      const submitMatches = tmuxLog.match(/send-keys -t %99 C-m/g);
+      assert.ok(submitMatches && submitMatches.length >= 2, `expected at least 2 submit keys, got ${submitMatches?.length ?? 0}`);
+    });
   });
 });
 

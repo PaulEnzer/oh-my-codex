@@ -5,7 +5,7 @@
 Run from repository root:
 
 ```bash
-npm run build
+npm run build   # TypeScript build
 node --test dist/team/__tests__/state.test.js
 node --test dist/mcp/__tests__/state-server-team-tools.test.js
 npm test

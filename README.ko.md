@@ -14,70 +14,16 @@
 
 [OpenAI Codex CLI](https://github.com/openai/codex)를 위한 멀티 에이전트 오케스트레이션 레이어.
 
-## 주요 가이드
+## v0.9.0 새로운 기능 — Spark Initiative
 
-- [OpenClaw / 범용 알림 게이트웨이 통합 가이드](./docs/openclaw-integration.ko.md)
+Spark Initiative는 OMX의 네이티브 탐색/검사 경로를 강화한 릴리스입니다.
 
-## 언어
+- **`omx explore` 네이티브 하네스** — 읽기 전용 저장소 탐색을 Rust 기반 하네스로 더 빠르고 엄격하게 실행합니다.
+- **`omx sparkshell`** — 긴 출력을 요약하고 tmux pane 캡처를 지원하는 운영자용 네이티브 검사 표면입니다.
+- **크로스 플랫폼 네이티브 릴리스 자산** — `omx-explore-harness`, `omx-sparkshell`, `native-release-manifest.json` 기반 hydration 경로가 릴리스 파이프라인에 포함됩니다.
+- **강화된 CI/CD** — `build` job의 명시적 Rust toolchain 설정, `cargo fmt --check`, `cargo clippy -- -D warnings`가 추가되었습니다.
 
-- [English](./README.md)
-- [한국어 (Korean)](./README.ko.md)
-- [日本語 (Japanese)](./README.ja.md)
-- [简体中文 (Chinese Simplified)](./README.zh.md)
-- [繁體中文 (Chinese Traditional)](./README.zh-TW.md)
-- [Tiếng Việt (Vietnamese)](./README.vi.md)
-- [Español (Spanish)](./README.es.md)
-- [Português (Portuguese)](./README.pt.md)
-- [Русский (Russian)](./README.ru.md)
-- [Türkçe (Turkish)](./README.tr.md)
-- [Deutsch (German)](./README.de.md)
-- [Français (French)](./README.fr.md)
-- [Italiano (Italian)](./README.it.md)
-
-
-OMX는 Codex를 단일 세션 에이전트에서 조율된 시스템으로 전환합니다:
-- 전문 에이전트를 위한 role prompts (`/prompts:name`)
-- 반복 가능한 실행 모드를 위한 workflow skills (`$name`)
-- tmux에서의 팀 오케스트레이션 (`omx team`, `$team`)
-- MCP 서버를 통한 영구 상태 및 메모리
-
-## OMX를 사용하는 이유
-
-Codex CLI는 직접적인 작업에 강합니다. OMX는 더 큰 작업을 위한 구조를 추가합니다:
-- 분해 및 단계적 실행 (`team-plan -> team-prd -> team-exec -> team-verify -> team-fix`)
-- 영구 모드 라이프사이클 상태 (`.omx/state/`)
-- 장기 세션을 위한 메모리 및 메모장 표면
-- 시작, 검증 및 취소를 위한 운영 제어
-
-OMX는 애드온이며, 포크가 아닙니다. Codex의 네이티브 확장 포인트를 사용합니다.
-
-## 요구사항
-
-- macOS 또는 Linux (Windows는 WSL2를 통해)
-- Node.js >= 20
-- Codex CLI 설치됨 (`npm install -g @openai/codex`)
-- Codex 인증 구성됨
-
-## 빠른 시작 (3분)
-
-```bash
-npm install -g oh-my-codex
-omx setup
-omx doctor
-```
-
-신뢰할 수 있는 환경을 위한 권장 시작 프로필:
-
-```bash
-omx --xhigh --madmax
-```
-
-## v0.5.0의 새로운 기능
-
-- `omx setup --scope user|project`를 통한 **범위 인식 설정** — 유연한 설치 모드.
-- `--spark` / `--madmax-spark`를 통한 **Spark worker 라우팅** — 팀 워커가 리더 모델을 강제하지 않고 `gpt-5.3-codex-spark`를 사용 가능.
-- **카탈로그 통합** — 더 간결한 표면을 위해 deprecated 프롬프트(`deep-executor`, `scientist`)와 9개의 deprecated 스킬 제거.
-- **알림 상세 레벨** — CCNotifier 출력에 대한 세밀한 제어.
+자세한 내용은 [v0.9.0 릴리스 노트](./docs/release-notes-0.9.0.md) 및 [릴리스 본문](./docs/release-body-0.9.0.md)을 참고하세요.
 
 ## 첫 번째 세션
 
@@ -116,7 +62,7 @@ User
 
 ```bash
 omx                # Codex 실행 (tmux에서 HUD와 함께)
-omx setup          # 범위별 프롬프트/스킬/설정 설치 + 프로젝트 AGENTS.md/.omx
+omx setup          # 범위별 프롬프트/스킬/설정 설치 + 프로젝트 .omx + 범위별 AGENTS.md
 omx doctor         # 설치/런타임 진단
 omx doctor --team  # Team/swarm 진단
 omx team ...       # tmux 팀 워커 시작/상태/재개/종료
@@ -175,7 +121,7 @@ export OMX_MCP_WORKDIR_ROOTS="/path/to/project:/path/to/another-root"
 -c model_instructions_file="<cwd>/AGENTS.md"
 ```
 
-이것은 프로젝트 `AGENTS.md` 지침을 Codex 시작 명령에 추가합니다.
+이것은 `CODEX_HOME`의 `AGENTS.md`와 프로젝트 `AGENTS.md`(있는 경우)를 병합한 뒤 런타임 오버레이를 추가합니다.
 Codex 동작을 확장하지만, Codex 핵심 시스템 정책을 대체/우회하지 않습니다.
 
 제어:
@@ -240,10 +186,11 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # 선택: 적응형 queue->resend 폴백 비활
 
 - `.omx/setup-scope.json` (저장된 설정 범위)
 - 범위에 따른 설치:
-  - `user`: `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`
-  - `project`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`
+  - `user`: `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
+  - `project`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
 - 시작 동작: 저장된 범위가 `project`이면, `omx` 시작 시 자동으로 `CODEX_HOME=./.codex`를 사용합니다 (`CODEX_HOME`이 이미 설정되지 않은 경우).
-- 기존 `AGENTS.md`는 기본적으로 보존됩니다. 대화형 TTY 실행에서 setup은 덮어쓰기 전에 확인합니다; `--force`는 확인 없이 덮어씁니다 (활성 세션 안전 검사는 여전히 적용됩니다).
+- 시작 지침은 `~/.codex/AGENTS.md`(또는 `CODEX_HOME/AGENTS.md`)와 프로젝트 `./AGENTS.md`를 병합한 뒤 런타임 오버레이를 추가해 사용합니다.
+- 기존 `AGENTS.md`는 자동으로 덮어쓰지 않습니다. 대화형 TTY 실행에서는 덮어쓸지 확인하고, 비대화형 실행에서는 `--force`가 없으면 건너뜁니다 (활성 세션 안전 검사는 여전히 적용됩니다).
 - `config.toml` 업데이트 (두 범위 모두):
   - `notify = ["node", "..."]`
   - `model_reasoning_effort = "high"`
@@ -251,7 +198,7 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # 선택: 적응형 queue->resend 폴백 비활
   - `[features] multi_agent = true, child_agents_md = true`
   - MCP 서버 항목 (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`)
   - `[tui] status_line`
-- 프로젝트 `AGENTS.md`
+- 범위별 `AGENTS.md`
 - `.omx/` 런타임 디렉토리 및 HUD 설정
 
 ## 에이전트와 스킬

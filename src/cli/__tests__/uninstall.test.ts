@@ -15,10 +15,15 @@ function runOmx(
   const testDir = dirname(fileURLToPath(import.meta.url));
   const repoRoot = join(testDir, '..', '..', '..');
   const omxBin = join(repoRoot, 'bin', 'omx.js');
+  const resolvedHome = envOverrides.HOME ?? process.env.HOME;
   const result = spawnSync(process.execPath, [omxBin, ...argv], {
     cwd,
     encoding: 'utf-8',
-    env: { ...process.env, ...envOverrides },
+    env: {
+      ...process.env,
+      ...(resolvedHome && !envOverrides.CODEX_HOME ? { CODEX_HOME: join(resolvedHome, '.codex') } : {}),
+      ...envOverrides,
+    },
   });
   return {
     status: result.status,
@@ -463,6 +468,28 @@ describe('omx uninstall', () => {
       assert.equal(existsSync(join(wd, 'AGENTS.md')), true);
       const content = await readFile(join(wd, 'AGENTS.md'), 'utf-8');
       assert.equal(content, userAgentsMd);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('removes managed user-scope AGENTS.md from CODEX_HOME', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-uninstall-'));
+    try {
+      const home = join(wd, 'home');
+      const codexHome = join(home, '.codex');
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'user' }));
+      await writeFile(
+        join(codexHome, 'AGENTS.md'),
+        '# oh-my-codex - Intelligent Multi-Agent Orchestration\n<!-- omx:generated:agents-md -->\n',
+      );
+
+      const res = runOmx(wd, ['uninstall', '--keep-config'], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.equal(existsSync(join(codexHome, 'AGENTS.md')), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

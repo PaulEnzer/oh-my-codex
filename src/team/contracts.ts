@@ -25,12 +25,17 @@ export function canTransitionTeamTaskStatus(from: TeamTaskStatus, to: TeamTaskSt
 export const TEAM_EVENT_TYPES = [
   'task_completed',
   'task_failed',
+  'worker_state_changed',
   'worker_idle',
   'worker_stopped',
   'message_received',
+  'leader_notification_deferred',
+  'all_workers_idle',
   'shutdown_ack',
   'shutdown_gate',
   'shutdown_gate_forced',
+  'ralph_cleanup_policy',
+  'ralph_cleanup_summary',
   'approval_decision',
   'team_leader_nudge',
 ] as const;

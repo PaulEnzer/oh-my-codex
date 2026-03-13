@@ -14,70 +14,16 @@
 
 [OpenAI Codex CLI](https://github.com/openai/codex) 的多智能体编排层。
 
-## 精选指南
+## v0.9.0 新特性 — Spark Initiative
 
-- [OpenClaw / 通用通知网关集成指南](./docs/openclaw-integration.zh.md)
+Spark Initiative 是一次强化 OMX 原生探索与检查路径的版本发布。
 
-## 语言
+- **`omx explore` 原生 harness** —— 通过 Rust 原生 harness 更快、更严格地执行只读仓库探索。
+- **`omx sparkshell`** —— 面向操作者的原生检查界面，支持长输出摘要与 tmux pane 捕获。
+- **跨平台原生发布资产** —— `omx-explore-harness`、`omx-sparkshell` 与 `native-release-manifest.json` 的 hydration 路径现已纳入发布流水线。
+- **增强的 CI/CD** —— 为 `build` job 增加显式 Rust toolchain 设置，并加入 `cargo fmt --check` 与 `cargo clippy -- -D warnings`。
 
-- [English](./README.md)
-- [한국어 (Korean)](./README.ko.md)
-- [日本語 (Japanese)](./README.ja.md)
-- [简体中文 (Chinese Simplified)](./README.zh.md)
-- [繁體中文 (Chinese Traditional)](./README.zh-TW.md)
-- [Tiếng Việt (Vietnamese)](./README.vi.md)
-- [Español (Spanish)](./README.es.md)
-- [Português (Portuguese)](./README.pt.md)
-- [Русский (Russian)](./README.ru.md)
-- [Türkçe (Turkish)](./README.tr.md)
-- [Deutsch (German)](./README.de.md)
-- [Français (French)](./README.fr.md)
-- [Italiano (Italian)](./README.it.md)
-
-
-OMX 将 Codex 从单会话代理转变为协调系统：
-- 用于专业代理的 role prompts (`/prompts:name`)
-- 用于可重复执行模式的 workflow skills (`$name`)
-- 在 tmux 中的团队编排 (`omx team`, `$team`)
-- 通过 MCP 服务器实现持久状态和记忆
-
-## 为什么选择 OMX
-
-Codex CLI 擅长处理直接任务。OMX 为更大规模的工作添加结构：
-- 分解和分阶段执行 (`team-plan -> team-prd -> team-exec -> team-verify -> team-fix`)
-- 持久化的模式生命周期状态 (`.omx/state/`)
-- 长时间会话的记忆和记事本表面
-- 用于启动、验证和取消的操作控制
-
-OMX 是一个插件，而非 fork。它使用 Codex 的原生扩展点。
-
-## 系统要求
-
-- macOS 或 Linux（Windows 通过 WSL2）
-- Node.js >= 20
-- 已安装 Codex CLI (`npm install -g @openai/codex`)
-- 已配置 Codex 身份验证
-
-## 快速开始（3 分钟）
-
-```bash
-npm install -g oh-my-codex
-omx setup
-omx doctor
-```
-
-推荐的可信环境启动配置：
-
-```bash
-omx --xhigh --madmax
-```
-
-## v0.5.0 新功能
-
-- 通过 `omx setup --scope user|project` 实现**作用域感知设置** — 灵活的安装模式。
-- 通过 `--spark` / `--madmax-spark` 实现 **Spark worker 路由** — 团队 worker 可以使用 `gpt-5.3-codex-spark` 而无需强制使用领导者模型。
-- **目录整合** — 移除已弃用的 prompt（`deep-executor`、`scientist`）和 9 个已弃用的 skill，使表面更精简。
-- **通知详细级别** — 对 CCNotifier 输出的精细控制。
+详情请参阅 [v0.9.0 发布说明](./docs/release-notes-0.9.0.md) 和 [发布正文](./docs/release-body-0.9.0.md)。
 
 ## 首次会话
 
@@ -116,7 +62,7 @@ User
 
 ```bash
 omx                # 启动 Codex（在 tmux 中附带 HUD）
-omx setup          # 按作用域安装 prompt/skill/config + 项目 AGENTS.md/.omx
+omx setup          # 按作用域安装 prompt/skill/config + 项目 .omx + 作用域专属 AGENTS.md
 omx doctor         # 安装/运行时诊断
 omx doctor --team  # Team/swarm 诊断
 omx team ...       # 启动/状态/恢复/关闭 tmux 团队 worker
@@ -175,7 +121,7 @@ export OMX_MCP_WORKDIR_ROOTS="/path/to/project:/path/to/another-root"
 -c model_instructions_file="<cwd>/AGENTS.md"
 ```
 
-这将项目 `AGENTS.md` 指导添加到 Codex 启动指令中。
+这会将 `CODEX_HOME` 中的 `AGENTS.md` 与项目 `AGENTS.md`（如果存在）合并，然后再附加运行时 overlay。
 扩展 Codex 行为，但不会替换/绕过 Codex 核心系统策略。
 
 控制：
@@ -240,10 +186,11 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # 可选：禁用自适应 queue->resend 回退
 
 - `.omx/setup-scope.json`（持久化的设置作用域）
 - 依赖作用域的安装：
-  - `user`：`~/.codex/prompts/`、`~/.agents/skills/`、`~/.codex/config.toml`、`~/.omx/agents/`
-  - `project`：`./.codex/prompts/`、`./.agents/skills/`、`./.codex/config.toml`、`./.omx/agents/`
+  - `user`：`~/.codex/prompts/`、`~/.agents/skills/`、`~/.codex/config.toml`、`~/.omx/agents/`、`~/.codex/AGENTS.md`
+  - `project`：`./.codex/prompts/`、`./.agents/skills/`、`./.codex/config.toml`、`./.omx/agents/`、`./AGENTS.md`
 - 启动行为：如果持久化的作用域是 `project`，`omx` 启动时自动使用 `CODEX_HOME=./.codex`（除非 `CODEX_HOME` 已设置）。
-- 现有 `AGENTS.md` 默认保留。在交互式 TTY 运行中，setup 会在覆盖前询问；`--force` 无需询问直接覆盖（活动会话安全检查仍然适用）。
+- 启动指令会合并 `~/.codex/AGENTS.md`（或被覆盖的 `CODEX_HOME/AGENTS.md`）与项目 `./AGENTS.md`，然后附加运行时 overlay。
+- 现有 `AGENTS.md` 文件绝不会被静默覆盖：交互式 TTY 下 setup 会先询问是否替换；非交互模式下除非传入 `--force`，否则会跳过替换（活动会话安全检查仍然适用）。
 - `config.toml` 更新（两种作用域均适用）：
   - `notify = ["node", "..."]`
   - `model_reasoning_effort = "high"`
@@ -251,7 +198,7 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # 可选：禁用自适应 queue->resend 回退
   - `[features] multi_agent = true, child_agents_md = true`
   - MCP 服务器条目（`omx_state`、`omx_memory`、`omx_code_intel`、`omx_trace`）
   - `[tui] status_line`
-- 项目 `AGENTS.md`
+- 作用域专属 `AGENTS.md`
 - `.omx/` 运行时目录和 HUD 配置
 
 ## 代理和技能

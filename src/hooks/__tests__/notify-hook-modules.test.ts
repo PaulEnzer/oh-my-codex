@@ -112,6 +112,90 @@ describe('notify-hook/utils – clampPct', () => {
 });
 
 // ---------------------------------------------------------------------------
+// operational-events.js
+// ---------------------------------------------------------------------------
+describe('notify-hook/operational-events – classifyExecCommand', () => {
+  it('classifies concrete test commands without matching search commands', async () => {
+    const { classifyExecCommand } = await loadModule('notify-hook/operational-events.js');
+    assert.deepEqual(classifyExecCommand('npm test'), { kind: 'test', command: 'npm test' });
+    assert.equal(classifyExecCommand('rg "npm test" src'), null);
+  });
+
+  it('classifies gh pr create commands', async () => {
+    const { classifyExecCommand } = await loadModule('notify-hook/operational-events.js');
+    assert.deepEqual(classifyExecCommand('gh pr create --base dev --fill'), {
+      kind: 'pr-create',
+      command: 'gh pr create --base dev --fill',
+    });
+  });
+});
+
+describe('notify-hook/operational-events – parseCommandResult', () => {
+  it('extracts exit code and PR metadata from command output', async () => {
+    const { parseCommandResult } = await loadModule('notify-hook/operational-events.js');
+    const parsed = parseCommandResult('Process exited with code 0\nOutput:\nhttps://github.com/acme/repo/pull/663\n');
+    assert.equal(parsed.exit_code, 0);
+    assert.equal(parsed.success, true);
+    assert.equal(parsed.pr_number, 663);
+    assert.equal(parsed.pr_url, 'https://github.com/acme/repo/pull/663');
+  });
+
+  it('extracts error summary for failed commands', async () => {
+    const { parseCommandResult } = await loadModule('notify-hook/operational-events.js');
+    const parsed = parseCommandResult('Process exited with code 1\nstderr:\nError: test suite failed\n');
+    assert.equal(parsed.exit_code, 1);
+    assert.equal(parsed.success, false);
+    assert.match(parsed.error_summary || '', /failed/i);
+  });
+});
+
+describe('notify-hook/operational-events – buildOperationalContext', () => {
+  it('resolves a stable session_name from cwd + session id', async () => {
+    const { buildOperationalContext } = await loadModule('notify-hook/operational-events.js');
+    const sessionId = 'omx-issue-663-session';
+    const originalTmux = process.env.TMUX;
+    delete process.env.TMUX;
+    try {
+      const context = buildOperationalContext({
+        cwd: process.cwd(),
+        normalizedEvent: 'pr-created',
+        sessionId,
+        status: 'finished',
+      });
+
+      assert.equal(typeof context.session_name, 'string');
+      assert.notEqual(context.session_name, sessionId);
+      assert.match(context.session_name || '', /^omx-/);
+      assert.match(context.session_name || '', /issue-663-session/);
+    } finally {
+      if (originalTmux === undefined) delete process.env.TMUX;
+      else process.env.TMUX = originalTmux;
+    }
+  });
+});
+
+describe('notify-hook/operational-events – deriveAssistantSignalEvents', () => {
+  it('detects handoff-needed and retry-needed from assistant text', async () => {
+    const { deriveAssistantSignalEvents } = await loadModule('notify-hook/operational-events.js');
+    const signals = deriveAssistantSignalEvents('If you want, next I can do one of two things: retry the flaky step or handoff the follow-up.');
+    assert.equal(signals.some((signal: { event?: string }) => signal.event === 'handoff-needed'), true);
+    assert.equal(signals.some((signal: { event?: string }) => signal.event === 'retry-needed'), true);
+  });
+
+  it('avoids duplicate finished/failed assistant lifecycle signals', async () => {
+    const { deriveAssistantSignalEvents } = await loadModule('notify-hook/operational-events.js');
+    assert.equal(
+      deriveAssistantSignalEvents('Implementation completed. Final summary ready.').some((signal: { event?: string }) => signal.event === 'finished'),
+      false,
+    );
+    assert.equal(
+      deriveAssistantSignalEvents('The operation failed with error: unable to continue.').some((signal: { event?: string }) => signal.event === 'failed'),
+      false,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // auto-nudge.js – detectStallPattern
 // ---------------------------------------------------------------------------
 describe('notify-hook/auto-nudge – detectStallPattern', () => {
@@ -123,6 +207,16 @@ describe('notify-hook/auto-nudge – detectStallPattern', () => {
     assert.equal(detectStallPattern('If you want, I can refactor.', DEFAULT_STALL_PATTERNS), true);
     assert.equal(detectStallPattern('Let me know if you need more help.', DEFAULT_STALL_PATTERNS), true);
     assert.equal(detectStallPattern('Ready to proceed whenever you are.', DEFAULT_STALL_PATTERNS), true);
+    assert.equal(detectStallPattern('I’M READY TO take the next step.', DEFAULT_STALL_PATTERNS), true);
+    assert.equal(detectStallPattern('KEEP GOING and I will finish the patch.', DEFAULT_STALL_PATTERNS), true);
+  });
+
+  it('detects team-worker follow-up phrases like continue with and next step', async () => {
+    const { detectStallPattern, DEFAULT_STALL_PATTERNS } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(detectStallPattern('I can continue with the worker follow-up from here.', DEFAULT_STALL_PATTERNS), true);
+    assert.equal(detectStallPattern('The next step is to finish the worker handoff.', DEFAULT_STALL_PATTERNS), true);
+    assert.equal(detectStallPattern('The NEXT STEPS would be running tests and posting the summary.', DEFAULT_STALL_PATTERNS), true);
+    assert.equal(detectStallPattern('We can pick up with the cleanup after this.', DEFAULT_STALL_PATTERNS), true);
   });
 
   it('returns false when no stall pattern present', async () => {
@@ -137,6 +231,12 @@ describe('notify-hook/auto-nudge – detectStallPattern', () => {
     const custom = ['awaiting approval'];
     assert.equal(detectStallPattern('Changes staged. Awaiting approval.', custom), true);
     assert.equal(detectStallPattern('Would you like me to proceed?', custom), false);
+  });
+
+  it('ignores prior OMX injection lines so injected text cannot self-trigger detection', async () => {
+    const { detectStallPattern, DEFAULT_STALL_PATTERNS } = await loadModule('notify-hook/auto-nudge.js');
+    const text = 'Completed the change.\nyes, proceed [OMX_TMUX_INJECT]\nkeep going [OMX_TMUX_INJECT]';
+    assert.equal(detectStallPattern(text, DEFAULT_STALL_PATTERNS), false);
   });
 
   it('focuses detection on the last few lines (hotZone)', async () => {
@@ -253,6 +353,62 @@ describe('notify-hook/auto-nudge – inferSkillPhaseFromText', () => {
     assert.equal(inferSkillPhaseFromText('neutral text', 'reviewing'), 'reviewing');
   });
 });
+
+describe('notify-hook/auto-nudge – blocked deep-interview auto approvals', () => {
+  it('normalizes injected approval text before matching blocked inputs', async () => {
+    const { normalizeBlockedAutoApprovalInput } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(normalizeBlockedAutoApprovalInput(' yes, proceed [OMX_TMUX_INJECT] '), 'yes proceed');
+  });
+
+  it('matches each blocked approval keyword or phrase', async () => {
+    const { isBlockedAutoApprovalInput, DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS } = await loadModule('notify-hook/auto-nudge.js');
+    for (const blocked of DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS) {
+      assert.equal(isBlockedAutoApprovalInput(blocked), true, `expected blocked input ${blocked} to match`);
+    }
+  });
+
+  it('blocks combined yes/proceed injection text', async () => {
+    const { isBlockedAutoApprovalInput } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(isBlockedAutoApprovalInput('yes, proceed'), true);
+  });
+
+  it('treats actionable "Next I should ..." replies like continuation approval', async () => {
+    const { isBlockedAutoApprovalInput } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(isBlockedAutoApprovalInput('Next I should update the focused tests.'), true);
+    assert.equal(isBlockedAutoApprovalInput('Maybe next I should update the focused tests.'), false);
+  });
+
+  it('does not block unrelated responses', async () => {
+    const { isBlockedAutoApprovalInput } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(isBlockedAutoApprovalInput('deep interview is active; auto-approval shortcuts are blocked until the interview finishes.'), false);
+  });
+
+  it('infers success/error/abort lock release reasons', async () => {
+    const { inferDeepInterviewReleaseReason } = await loadModule('notify-hook/auto-nudge.js');
+    const baseState = {
+      skill: 'deep-interview',
+      phase: 'planning',
+      input_lock: { active: true },
+    };
+
+    assert.equal(inferDeepInterviewReleaseReason({
+      skillState: { ...baseState, phase: 'completing' },
+      latestUserInput: '',
+      lastMessage: 'Interview summary complete.',
+    }), 'success');
+    assert.equal(inferDeepInterviewReleaseReason({
+      skillState: baseState,
+      latestUserInput: '',
+      lastMessage: 'Interview failed with error: unable to continue.',
+    }), 'error');
+    assert.equal(inferDeepInterviewReleaseReason({
+      skillState: baseState,
+      latestUserInput: 'abort',
+      lastMessage: 'Stopping now.',
+    }), 'abort');
+  });
+});
+
 
 // ---------------------------------------------------------------------------
 // team-worker.js – parseTeamWorkerEnv

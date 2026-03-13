@@ -1,11 +1,12 @@
 import type { TeamPhase, TerminalPhase } from '../orchestrator.js';
-import type { TeamTaskStatus } from '../contracts.js';
+import type { TeamTaskStatus, TeamEventType } from '../contracts.js';
 
 export interface TeamConfig {
   name: string;
   task: string;
   agent_type: string;
   worker_launch_mode: 'interactive' | 'prompt';
+  lifecycle_profile: 'default' | 'linked_ralph';
   worker_count: number;
   max_workers: number;
   workers: WorkerInfo[];
@@ -31,9 +32,11 @@ export interface WorkerInfo {
   pid?: number;
   pane_id?: string;
   working_dir?: string;
+  worktree_repo_root?: string;
   worktree_path?: string;
   worktree_branch?: string;
   worktree_detached?: boolean;
+  worktree_created?: boolean;
   team_state_root?: string;
 }
 
@@ -91,6 +94,13 @@ export interface TeamPolicy {
   worker_launch_mode: 'interactive' | 'prompt';
   dispatch_mode: 'hook_preferred_with_fallback' | 'transport_direct';
   dispatch_ack_timeout_ms: number;
+}
+
+/**
+ * Lifecycle/workflow guardrails persisted alongside the manifest, but kept
+ * separate from transport/runtime policy so each layer has a single owner.
+ */
+export interface TeamGovernance {
   delegation_only: boolean;
   plan_approval_required: boolean;
   nested_teams_allowed: boolean;
@@ -149,6 +159,8 @@ export interface TeamManifestV2 {
   task: string;
   leader: TeamLeader;
   policy: TeamPolicy;
+  governance: TeamGovernance;
+  lifecycle_profile: 'default' | 'linked_ralph';
   permissions_snapshot: PermissionsSnapshot;
   tmux_session: string;
   worker_count: number;
@@ -174,24 +186,19 @@ export interface TeamWorkspaceMetadata {
 export interface TeamEvent {
   event_id: string;
   team: string;
-  type:
-    | 'task_completed'
-    | 'task_failed'
-    | 'worker_idle'
-    | 'worker_stopped'
-    | 'message_received'
-    | 'shutdown_ack'
-    | 'shutdown_gate'
-    | 'shutdown_gate_forced'
-    | 'ralph_cleanup_policy'
-    | 'ralph_cleanup_summary'
-    | 'approval_decision'
-    | 'team_leader_nudge';
+  type: TeamEventType;
   worker: string;
   task_id?: string;
   message_id?: string | null;
   reason?: string;
+  state?: WorkerStatus['state'];
+  prev_state?: WorkerStatus['state'];
+  worker_count?: number;
+  to_worker?: string;
+  source_type?: string;
+  metadata?: Record<string, unknown>;
   created_at: string;
+  [key: string]: unknown;
 }
 
 export interface TeamMailboxMessage {
@@ -233,6 +240,10 @@ export type TransitionTaskResult =
 export type ReleaseTaskClaimResult =
   | { ok: true; task: TeamTaskV2 }
   | { ok: false; error: 'claim_conflict' | 'task_not_found' | 'already_terminal' | 'lease_expired' };
+
+export type ReclaimTaskResult =
+  | { ok: true; task: TeamTaskV2; reclaimed: boolean }
+  | { ok: false; error: 'claim_conflict' | 'task_not_found' | 'already_terminal' | 'lease_active' };
 
 export interface TeamSummary {
   teamName: string;

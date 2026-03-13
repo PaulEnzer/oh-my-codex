@@ -1,5 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { PassThrough } from 'node:stream';
 import { mkdtemp, readFile, rm, writeFile, chmod } from 'fs/promises';
 import { join } from 'path';
@@ -57,6 +59,44 @@ function withEmptyPath<T>(fn: () => T): T {
   } finally {
     if (typeof prev === 'string') process.env.PATH = prev;
     else delete process.env.PATH;
+  }
+}
+
+function withMockedExistsSync<T>(mock: typeof fs.existsSync, fn: () => T): T {
+  const original = fs.existsSync;
+  fs.existsSync = mock;
+  syncBuiltinESMExports();
+  try {
+    return fn();
+  } finally {
+    fs.existsSync = original;
+    syncBuiltinESMExports();
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function withMockTmuxFixture<T>(
+  dirPrefix: string,
+  tmuxScript: (tmuxLogPath: string) => string,
+  run: (ctx: { logPath: string }) => Promise<T>,
+): Promise<T> {
+  const fakeBinDir = await mkdtemp(join(tmpdir(), dirPrefix));
+  const logPath = join(fakeBinDir, 'tmux.log');
+  const tmuxStubPath = join(fakeBinDir, 'tmux');
+  const previousPath = process.env.PATH;
+
+  try {
+    await writeFile(tmuxStubPath, tmuxScript(logPath));
+    await chmod(tmuxStubPath, 0o755);
+    process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+    return await run({ logPath });
+  } finally {
+    if (typeof previousPath === 'string') process.env.PATH = previousPath;
+    else delete process.env.PATH;
+    await rm(fakeBinDir, { recursive: true, force: true });
   }
 }
 
@@ -547,7 +587,9 @@ describe('buildWorkerStartupCommand', () => {
     const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
     try {
-      const cmd = buildWorkerStartupCommand('alpha', 2);
+      const cmd = withMockedExistsSync((candidate) => candidate === '/bin/zsh', () =>
+        buildWorkerStartupCommand('alpha', 2),
+      );
       assert.match(cmd, /OMX_TEAM_WORKER=alpha\/worker-2/);
       assert.match(cmd, /'\/bin\/zsh' -lc/);
       assert.match(cmd, /source ~\/\.zshrc/);
@@ -602,6 +644,48 @@ describe('buildWorkerStartupCommand', () => {
       else delete process.env.SHELL;
       if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('resolves POSIX leader paths before building fish worker startup commands', async () => {
+    const fakeBin = await mkdtemp(join(tmpdir(), 'omx-worker-startup-posix-'));
+    const prevPath = process.env.PATH;
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.PATH = fakeBin;
+    process.env.SHELL = '/bin/fish';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const nodePath = join(fakeBin, 'node');
+      const codexPath = join(fakeBin, 'codex');
+      await writeFile(nodePath, '#!/bin/sh\n');
+      await writeFile(codexPath, '#!/bin/sh\n');
+      await chmod(nodePath, 0o755);
+      await chmod(codexPath, 0o755);
+
+      const { buildWorkerStartupCommand: buildFreshWorkerStartupCommand } = await import(`../tmux-session.js?posix-path=${Date.now()}`);
+      const cmd = buildFreshWorkerStartupCommand(
+        'alpha',
+        1,
+        ['-c', 'model_reasoning_effort="low"'],
+        process.cwd(),
+        {},
+        'codex',
+      );
+
+      assert.match(cmd, new RegExp(escapeRegExp(`OMX_LEADER_NODE_PATH=${nodePath}`)));
+      assert.match(cmd, new RegExp(escapeRegExp(`OMX_LEADER_CLI_PATH=${codexPath}`)));
+      assert.match(cmd, new RegExp(escapeRegExp(`export PATH='\\''${fakeBin}'\\'':$PATH; exec ${codexPath}`)));
+      assert.doesNotMatch(cmd, /export PATH='\\''node'\\'':\$PATH/);
+      assert.doesNotMatch(cmd, / exec codex(?:\s|')/);
+    } finally {
+      if (typeof prevPath === 'string') process.env.PATH = prevPath;
+      else delete process.env.PATH;
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      await rm(fakeBin, { recursive: true, force: true });
     }
   });
 
@@ -663,6 +747,54 @@ describe('buildWorkerStartupCommand', () => {
     }
   });
 
+  it('forces codex bypass under explicit launch-arg profiles', () => {
+    const prevShell = process.env.SHELL;
+    process.env.SHELL = '/bin/bash';
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const profiles = [
+        ['--model', 'gpt-5', '-c', 'model_reasoning_effort="high"'],
+        ['--model', 'gpt-5.3-codex-spark', '-c', 'model_reasoning_effort="low"'],
+      ];
+
+      for (const launchArgs of profiles) {
+        const cmd = buildWorkerStartupCommand('alpha', 1, launchArgs, process.cwd(), {}, 'codex');
+        assert.match(cmd, /exec .*codex/);
+        assert.equal((cmd.match(/--dangerously-bypass-approvals-and-sandbox/g) || []).length, 1);
+        assert.match(cmd, /--model/);
+        assert.match(cmd, new RegExp(launchArgs[1]!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+        assert.match(cmd, new RegExp(launchArgs[3]!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      }
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('supports worker-specific reasoning overrides for codex and strips them for claude workers', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/bin/bash';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const codexCmd = buildWorkerStartupCommand('alpha', 1, ['-c', 'model_reasoning_effort="low"'], process.cwd(), {}, 'codex');
+      const claudeCmd = buildWorkerStartupCommand('alpha', 2, ['-c', 'model_reasoning_effort="high"'], process.cwd(), {}, 'claude');
+      assert.match(codexCmd, /exec .*codex/);
+      assert.match(codexCmd, /'model_reasoning_effort="low"'/);
+      assert.match(claudeCmd, /exec .*claude/);
+      assert.equal((claudeCmd.match(/--dangerously-skip-permissions/g) || []).length, 1);
+      assert.doesNotMatch(claudeCmd, /model_reasoning_effort/);
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
   it('injects model_instructions_file override by default', () => {
     const prevShell = process.env.SHELL;
     process.env.SHELL = '/bin/bash';
@@ -678,6 +810,32 @@ describe('buildWorkerStartupCommand', () => {
     } finally {
       if (typeof prevShell === 'string') process.env.SHELL = prevShell;
       else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof prevInstr === 'string') process.env.OMX_MODEL_INSTRUCTIONS_FILE = prevInstr;
+      else delete process.env.OMX_MODEL_INSTRUCTIONS_FILE;
+    }
+  });
+
+
+  it('uses per-worker OMX_MODEL_INSTRUCTIONS_FILE from extraEnv when building process launch spec', () => {
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const prevInstr = process.env.OMX_MODEL_INSTRUCTIONS_FILE;
+    delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    delete process.env.OMX_MODEL_INSTRUCTIONS_FILE;
+    try {
+      const spec = buildWorkerProcessLaunchSpec(
+        'alpha',
+        1,
+        ['-c', 'model_reasoning_effort="low"'],
+        '/tmp/project',
+        { OMX_MODEL_INSTRUCTIONS_FILE: '/tmp/project/.omx/state/team/alpha/workers/worker-1/AGENTS.md' },
+        'codex',
+      );
+      const joined = spec.args.join(' ');
+      assert.match(joined, /model_reasoning_effort="low"/);
+      assert.match(joined, /model_instructions_file="\/tmp\/project\/.omx\/state\/team\/alpha\/workers\/worker-1\/AGENTS\.md"/);
+    } finally {
       if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
       if (typeof prevInstr === 'string') process.env.OMX_MODEL_INSTRUCTIONS_FILE = prevInstr;
@@ -748,6 +906,103 @@ describe('buildWorkerStartupCommand', () => {
       else delete process.env.OMX_MODEL_INSTRUCTIONS_FILE;
       if (typeof prevMsystem === 'string') process.env.MSYSTEM = prevMsystem;
       else delete process.env.MSYSTEM;
+    }
+  });
+
+  it('ignores unsupported SHELL values and resolves a supported worker shell', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/usr/bin/fish';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, [], process.cwd());
+      assert.doesNotMatch(cmd, /fish/, 'worker shell must not inherit unsupported fish SHELL');
+      assert.match(cmd, /\/(?:bin|usr\/bin|usr\/local\/bin|opt\/homebrew\/bin)\/(?:zsh|bash)\b|\/bin\/sh\b/);
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('never emits fish-style PATH manipulation for unsupported SHELL values', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/usr/bin/fish';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, [], process.cwd());
+      assert.doesNotMatch(cmd, /set -x PATH/, 'must not emit fish PATH syntax');
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('uses /bin/sh on MSYS2/Windows regardless of zsh availability', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const prevMsystem = process.env.MSYSTEM;
+    const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    process.env.SHELL = '/bin/zsh';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    process.env.MSYSTEM = 'MINGW64';
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      const cmd = buildWorkerStartupCommand('alpha', 1, [], 'C:\\repo');
+      assert.match(cmd, /\/bin\/sh/, 'must use /bin/sh on MSYS2/Windows');
+      assert.doesNotMatch(cmd, /\/zsh/, 'must not attempt zsh on Windows');
+      assert.doesNotMatch(cmd, /\.zshrc/, 'must not source zshrc on Windows');
+    } finally {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof prevMsystem === 'string') process.env.MSYSTEM = prevMsystem;
+      else delete process.env.MSYSTEM;
+    }
+  });
+
+  it('falls back to bash when SHELL is unsupported and zsh candidates are unavailable', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/opt/custom/fish';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = withMockedExistsSync((candidate) => candidate === '/opt/custom/fish' || candidate === '/bin/bash', () =>
+        buildWorkerStartupCommand('alpha', 1, [], process.cwd()),
+      );
+      assert.match(cmd, /\/bin\/bash\b/, 'must fall back to bash when zsh is unavailable');
+      assert.match(cmd, /\.bashrc/, 'must source bash rc file for bash fallback');
+      assert.doesNotMatch(cmd, /fish/, 'must not launch unsupported fish shell');
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('falls back to /bin/sh when no supported shell candidates exist', () => {
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/opt/custom/fish';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = withMockedExistsSync((candidate) => candidate === '/opt/custom/fish', () =>
+        buildWorkerStartupCommand('alpha', 1, [], process.cwd()),
+      );
+      assert.match(cmd, /'\/bin\/sh' -lc\b/, 'must launch workers through /bin/sh when no supported shells exist');
+      assert.doesNotMatch(cmd, /\.zshrc|\.bashrc/, 'must not source zsh/bash rc files for /bin/sh fallback');
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     }
   });
 });
@@ -934,7 +1189,7 @@ describe('team worker launch mode helpers', () => {
       // command is now the resolved absolute path (or bare binary if which fails)
       assert.equal(spec.workerCli, 'codex');
       assert.ok(typeof spec.command === 'string' && spec.command.length > 0, 'command must be a non-empty string');
-      assert.deepEqual(spec.args, ['--model', 'gpt-5.3-codex']);
+      assert.deepEqual(spec.args, ['--model', 'gpt-5.3-codex', '--dangerously-bypass-approvals-and-sandbox']);
       assert.equal(spec.env.OMX_TEAM_WORKER, 'alpha-team/worker-2');
       assert.equal(spec.env.OMX_TEAM_STATE_ROOT, '/tmp/workspace/.omx/state');
     } finally {
@@ -1397,41 +1652,30 @@ describe('killWorker leader pane guard', () => {
 
 describe('teardownWorkerPanes shared primitive', () => {
   it('excludes leader and hud panes in shared pane-kill primitive', async () => {
-    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-tmux-teardown-'));
-    const logPath = join(fakeBinDir, 'tmux.log');
-    const tmuxStubPath = join(fakeBinDir, 'tmux');
-    const previousPath = process.env.PATH;
-    try {
-      await writeFile(
-        tmuxStubPath,
-        `#!/bin/sh
+    await withMockTmuxFixture(
+      'omx-tmux-teardown-',
+      (logPath) => `#!/bin/sh
 set -eu
 printf '%s\\n' "$*" >> "${logPath}"
 exit 0
 `,
-      );
-      await chmod(tmuxStubPath, 0o755);
-      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+      async ({ logPath }) => {
+        const summary = await teardownWorkerPanes(['%1', '%2', '%3'], {
+          leaderPaneId: '%1',
+          hudPaneId: '%2',
+          graceMs: 1,
+        });
 
-      const summary = await teardownWorkerPanes(['%1', '%2', '%3'], {
-        leaderPaneId: '%1',
-        hudPaneId: '%2',
-        graceMs: 1,
-      });
-
-      assert.equal(summary.excluded.leader, 1);
-      assert.equal(summary.excluded.hud, 1);
-      assert.equal(summary.kill.attempted, 1);
-      assert.equal(summary.kill.succeeded, 1);
-      const log = await readFile(logPath, 'utf-8');
-      assert.match(log, /kill-pane -t %3/);
-      assert.doesNotMatch(log, /kill-pane -t %1/);
-      assert.doesNotMatch(log, /kill-pane -t %2/);
-    } finally {
-      if (typeof previousPath === 'string') process.env.PATH = previousPath;
-      else delete process.env.PATH;
-      await rm(fakeBinDir, { recursive: true, force: true });
-    }
+        assert.equal(summary.excluded.leader, 1);
+        assert.equal(summary.excluded.hud, 1);
+        assert.equal(summary.kill.attempted, 1);
+        assert.equal(summary.kill.succeeded, 1);
+        const log = await readFile(logPath, 'utf-8');
+        assert.match(log, /kill-pane -t %3/);
+        assert.doesNotMatch(log, /kill-pane -t %1/);
+        assert.doesNotMatch(log, /kill-pane -t %2/);
+      },
+    );
   });
 
   it('uses pane-id-direct kill semantics without liveness-gated helper calls', async () => {
@@ -1442,14 +1686,9 @@ exit 0
   });
 
   it('continues best-effort when a pane target is missing', async () => {
-    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-tmux-teardown-missing-'));
-    const logPath = join(fakeBinDir, 'tmux.log');
-    const tmuxStubPath = join(fakeBinDir, 'tmux');
-    const previousPath = process.env.PATH;
-    try {
-      await writeFile(
-        tmuxStubPath,
-        `#!/bin/sh
+    await withMockTmuxFixture(
+      'omx-tmux-teardown-missing-',
+      (logPath) => `#!/bin/sh
 set -eu
 printf '%s\\n' "$*" >> "${logPath}"
 if [ "$1" = "kill-pane" ] && [ "\${3:-}" = "%404" ]; then
@@ -1458,21 +1697,15 @@ if [ "$1" = "kill-pane" ] && [ "\${3:-}" = "%404" ]; then
 fi
 exit 0
 `,
-      );
-      await chmod(tmuxStubPath, 0o755);
-      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
-
-      const summary = await teardownWorkerPanes(['%404', '%405'], { graceMs: 1 });
-      assert.equal(summary.kill.attempted, 2);
-      assert.equal(summary.kill.succeeded, 1);
-      assert.equal(summary.kill.failed, 1);
-      const log = await readFile(logPath, 'utf-8');
-      assert.match(log, /kill-pane -t %404/);
-      assert.match(log, /kill-pane -t %405/);
-    } finally {
-      if (typeof previousPath === 'string') process.env.PATH = previousPath;
-      else delete process.env.PATH;
-      await rm(fakeBinDir, { recursive: true, force: true });
-    }
+      async ({ logPath }) => {
+        const summary = await teardownWorkerPanes(['%404', '%405'], { graceMs: 1 });
+        assert.equal(summary.kill.attempted, 2);
+        assert.equal(summary.kill.succeeded, 1);
+        assert.equal(summary.kill.failed, 1);
+        const log = await readFile(logPath, 'utf-8');
+        assert.match(log, /kill-pane -t %404/);
+        assert.match(log, /kill-pane -t %405/);
+      },
+    );
   });
 });

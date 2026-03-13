@@ -167,6 +167,11 @@ function resolveSignalExitCode(signal: NodeJS.Signals | null): number {
 }
 
 export async function askCommand(args: string[]): Promise<void> {
+  if (args[0] === '--help' || args[0] === '-h') {
+    console.log(ASK_USAGE);
+    return;
+  }
+
   const parsed = parseAskArgs(args);
   const packageRoot = getPackageRoot();
   const advisorScriptPath = resolveAskAdvisorScriptPath(packageRoot);

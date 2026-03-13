@@ -5,11 +5,13 @@
 import { readFile, writeFile, mkdir, appendFile, rename, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, resolve as resolvePath } from 'path';
-import { asNumber, safeString } from './utils.js';
+import { asNumber, safeString, isTerminalPhase } from './utils.js';
 import { readJsonIfExists } from './state-io.js';
 import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
+import { checkPaneReadyForTeamSendKeys } from './team-tmux-guard.js';
 import { DEFAULT_MARKER } from '../tmux-hook-engine.js';
+const LEADER_PANE_SHELL_NO_INJECTION_REASON = 'leader_pane_shell_no_injection';
 
 async function readTeamStateRootFromJson(path) {
   try {
@@ -119,6 +121,67 @@ function isFreshIso(value, maxAgeMs, nowMs) {
   return (nowMs - ts) <= maxAgeMs;
 }
 
+function resolveTerminalAtFromPhaseDoc(parsed, fallbackIso) {
+  const transitions = Array.isArray(parsed && parsed.transitions) ? parsed.transitions : [];
+  for (let idx = transitions.length - 1; idx >= 0; idx -= 1) {
+    const at = safeString(transitions[idx] && transitions[idx].at).trim();
+    if (at) return at;
+  }
+  const updatedAt = safeString(parsed && parsed.updated_at).trim();
+  return updatedAt || fallbackIso;
+}
+
+async function readTeamPhaseSnapshot(stateDir, teamName, nowIso = new Date().toISOString()) {
+  const phasePath = join(stateDir, 'team', teamName, 'phase.json');
+  try {
+    if (!existsSync(phasePath)) return { currentPhase: '', terminal: false, completedAt: '' };
+    const parsed = JSON.parse(await readFile(phasePath, 'utf-8'));
+    const currentPhase = safeString(parsed && parsed.current_phase).trim();
+    return {
+      currentPhase,
+      terminal: isTerminalPhase(currentPhase),
+      completedAt: resolveTerminalAtFromPhaseDoc(parsed, nowIso),
+    };
+  } catch {
+    return { currentPhase: '', terminal: false, completedAt: '' };
+  }
+}
+
+async function syncScopedTeamStateFromPhase(stateDir, teamName, phaseSnapshot, nowIso = new Date().toISOString()) {
+  if (!phaseSnapshot || !phaseSnapshot.terminal) return false;
+  const teamStatePath = join(stateDir, 'team-state.json');
+  try {
+    if (!existsSync(teamStatePath)) return false;
+    const parsed = JSON.parse(await readFile(teamStatePath, 'utf-8'));
+    if (!parsed || safeString(parsed.team_name).trim() !== teamName) return false;
+
+    let changed = false;
+    if (parsed.active !== false) {
+      parsed.active = false;
+      changed = true;
+    }
+    if (safeString(parsed.current_phase).trim() !== phaseSnapshot.currentPhase) {
+      parsed.current_phase = phaseSnapshot.currentPhase;
+      changed = true;
+    }
+    if (safeString(parsed.completed_at).trim() !== phaseSnapshot.completedAt && phaseSnapshot.completedAt) {
+      parsed.completed_at = phaseSnapshot.completedAt;
+      changed = true;
+    }
+    if (safeString(parsed.last_turn_at).trim() !== nowIso) {
+      parsed.last_turn_at = nowIso;
+      changed = true;
+    }
+
+    if (changed) {
+      await writeFile(teamStatePath, JSON.stringify(parsed, null, 2));
+    }
+    return changed;
+  } catch {
+    return false;
+  }
+}
+
 async function readWorkerStatusSnapshot(stateDir, teamName, workerName, nowMs = Date.now()) {
   const statusPath = join(stateDir, 'team', teamName, 'workers', workerName, 'status.json');
   try {
@@ -202,6 +265,8 @@ async function emitLeaderPaneMissingDeferred({
   tmuxSession,
   leaderPaneId,
   reason = 'leader_pane_missing_no_injection',
+  paneCurrentCommand = '',
+  sourceType = 'unknown',
 }) {
   const nowIso = new Date().toISOString();
   await logTmuxHookEvent(logsDir, {
@@ -214,6 +279,8 @@ async function emitLeaderPaneMissingDeferred({
     leader_pane_id: leaderPaneId || null,
     tmux_session: tmuxSession || null,
     tmux_injection_attempted: false,
+    pane_current_command: paneCurrentCommand || null,
+    source_type: sourceType,
   }).catch(() => {});
 
   const eventsDir = join(stateDir, 'team', teamName, 'events');
@@ -227,6 +294,11 @@ async function emitLeaderPaneMissingDeferred({
     to_worker: 'leader-fixed',
     reason,
     created_at: nowIso,
+    leader_pane_id: leaderPaneId || null,
+    tmux_session: tmuxSession || null,
+    tmux_injection_attempted: false,
+    pane_current_command: paneCurrentCommand || null,
+    source_type: sourceType,
   };
   await appendFile(eventsPath, JSON.stringify(event) + '\n').catch(() => {});
 }
@@ -254,6 +326,11 @@ export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, 
   const { teamName, workerName } = parsedTeamWorker;
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
+  const phaseSnapshot = await readTeamPhaseSnapshot(stateDir, teamName, nowIso);
+  if (phaseSnapshot.terminal) {
+    await syncScopedTeamStateFromPhase(stateDir, teamName, phaseSnapshot, nowIso);
+    return;
+  }
 
   // Only trigger check when this worker is idle
   const mySnapshot = await readWorkerStatusSnapshot(stateDir, teamName, workerName, nowMs);
@@ -288,11 +365,20 @@ export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, 
   if (!allIdle) return;
 
   if (!leaderPaneId) {
+    const nextIdleState = {
+      ...idleState,
+      last_notified_at_ms: nowMs,
+      last_notified_at: nowIso,
+      worker_count: workers.length,
+      delivery: 'deferred',
+    };
+    await writeFile(idleStatePath, JSON.stringify(nextIdleState, null, 2)).catch(() => {});
     await emitLeaderPaneMissingDeferred({
       stateDir,
       logsDir,
       teamName,
       workerName,
+      sourceType: 'all_workers_idle',
       tmuxSession,
       leaderPaneId,
     });
@@ -300,8 +386,33 @@ export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, 
   }
 
   const N = workers.length;
-  const message = `[OMX] All ${N} worker${N === 1 ? '' : 's'} idle. Ready for next instructions. ${DEFAULT_MARKER}`;
+  const nextAction = `Next: run omx team status ${teamName}, check unread worker messages, then assign the next concrete task or shut the team down.`;
+  const message = `[OMX] All ${N} worker${N === 1 ? '' : 's'} idle. ${nextAction} ${DEFAULT_MARKER}`;
   const tmuxTarget = leaderPaneId;
+  const paneGuard = await checkPaneReadyForTeamSendKeys(tmuxTarget);
+  if (!paneGuard.ok) {
+    const nextIdleState = {
+      ...idleState,
+      last_notified_at_ms: nowMs,
+      last_notified_at: nowIso,
+      worker_count: N,
+      delivery: 'deferred_shell',
+      pane_current_command: paneGuard.paneCurrentCommand || null,
+    };
+    await writeFile(idleStatePath, JSON.stringify(nextIdleState, null, 2)).catch(() => {});
+    await emitLeaderPaneMissingDeferred({
+      stateDir,
+      logsDir,
+      teamName,
+      workerName,
+      reason: LEADER_PANE_SHELL_NO_INJECTION_REASON,
+      paneCurrentCommand: paneGuard.paneCurrentCommand,
+      sourceType: 'all_workers_idle',
+      tmuxSession,
+      leaderPaneId,
+    });
+    return;
+  }
 
   try {
     await runProcess('tmux', ['send-keys', '-t', tmuxTarget, '-l', message], 3000);
@@ -359,6 +470,11 @@ export async function maybeNotifyLeaderWorkerIdle({ cwd, stateDir, logsDir, pars
   const { teamName, workerName } = parsedTeamWorker;
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
+  const phaseSnapshot = await readTeamPhaseSnapshot(stateDir, teamName, nowIso);
+  if (phaseSnapshot.terminal) {
+    await syncScopedTeamStateFromPhase(stateDir, teamName, phaseSnapshot, nowIso);
+    return;
+  }
 
   // Read current worker status (full object for task context)
   const workerDir = join(stateDir, 'team', teamName, 'workers', workerName);
@@ -437,18 +553,46 @@ export async function maybeNotifyLeaderWorkerIdle({ cwd, stateDir, logsDir, pars
       logsDir,
       teamName,
       workerName,
+      sourceType: 'worker_idle',
       tmuxSession,
       leaderPaneId,
     });
     return;
   }
   const tmuxTarget = leaderPaneId;
+  const paneGuard = await checkPaneReadyForTeamSendKeys(tmuxTarget);
+  if (!paneGuard.ok) {
+    try {
+      const tmpPath = cooldownPath + '.tmp.' + process.pid;
+      await writeFile(tmpPath, JSON.stringify({
+        last_notified_at_ms: nowMs,
+        last_notified_at: nowIso,
+        prev_state: prevState,
+        delivery: 'deferred_shell',
+        pane_current_command: paneGuard.paneCurrentCommand || null,
+      }, null, 2));
+      await rename(tmpPath, cooldownPath);
+    } catch { /* best effort */ }
+    await emitLeaderPaneMissingDeferred({
+      stateDir,
+      logsDir,
+      teamName,
+      workerName,
+      reason: LEADER_PANE_SHELL_NO_INJECTION_REASON,
+      paneCurrentCommand: paneGuard.paneCurrentCommand,
+      sourceType: 'worker_idle',
+      tmuxSession,
+      leaderPaneId,
+    });
+    return;
+  }
 
   // Build notification message with context
   const parts = [`[OMX] ${workerName} idle`];
   if (prevState && prevState !== 'unknown') parts.push(`(was: ${prevState})`);
   if (currentTaskId) parts.push(`task: ${currentTaskId}`);
   if (currentReason) parts.push(`reason: ${currentReason}`);
+  parts.push(`Next: read ${workerName}'s latest message/output, then assign the next concrete step or mark the task complete.`);
   const message = `${parts.join('. ')}. ${DEFAULT_MARKER}`;
 
   try {

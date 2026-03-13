@@ -16,14 +16,12 @@ import {
 } from './state-io.js';
 import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
+import { evaluatePaneInjectionReadiness, mapPaneInjectionReadinessReason, sendPaneInput } from './team-tmux-guard.js';
 import {
   normalizeTmuxHookConfig,
   pickActiveMode,
   evaluateInjectionGuards,
   buildSendKeysArgv,
-  buildPaneInModeArgv,
-  buildPaneCurrentCommandArgv,
-  isPaneRunningShell,
 } from '../tmux-hook-engine.js';
 
 export async function resolveSessionToPane(sessionName) {
@@ -347,54 +345,29 @@ export async function handleTmuxInjection({
     }
   };
 
-  // Scroll-safety guard: skip injection when the user is actively scrolling
-  // (pane is in copy-mode / tmux's scrollback view).  Sending keys to a pane
-  // in copy-mode would exit scrollback and disrupt the user's review session.
-  // We do NOT record the dedupe key here so the injection can be retried on
-  // the next agent-turn event once the pane is no longer in scroll mode.
-  if (config.skip_if_scrolling) {
-    try {
-      const modeResult = await runProcess('tmux', buildPaneInModeArgv(paneTarget), 1000);
-      const paneInMode = safeString(modeResult.stdout).trim();
-      if (paneInMode === '1') {
-        state.last_reason = 'scroll_active';
-        state.last_event_at = nowIso;
-        await writeFile(hookStatePath, JSON.stringify(state, null, 2)).catch(() => {});
-        await logTmuxHookEvent(logsDir, {
-          ...baseLog,
-          event: 'injection_skipped',
-          reason: 'scroll_active',
-          pane_target: paneTarget,
-        });
-        return;
-      }
-    } catch {
-      // Non-fatal: if querying copy-mode state fails, proceed with injection.
-    }
-  }
-
-  // Shell-detection guard: skip injection when the agent process has exited
-  // and the pane has returned to an interactive shell (zsh, bash, etc.).
-  // Sending the inject marker to a shell causes glob errors like
-  // "zsh: no matches found: [OMX_TMUX_INJECT]".  See #441.
+  // Shared pane-state guard: skip injection when the target pane is scrolling,
+  // has returned to a shell, is still bootstrapping, or is visibly busy.
   try {
-    const cmdResult = await runProcess('tmux', buildPaneCurrentCommandArgv(paneTarget), 1000);
-    const currentCmd = safeString(cmdResult.stdout).trim();
-    if (isPaneRunningShell(currentCmd)) {
-      state.last_reason = 'agent_not_running';
+    const paneGuard = await evaluatePaneInjectionReadiness(paneTarget, {
+      skipIfScrolling: config.skip_if_scrolling,
+    });
+    if (!paneGuard.ok) {
+      const reason = mapPaneInjectionReadinessReason(paneGuard.reason);
+      state.last_reason = reason;
       state.last_event_at = nowIso;
       await writeFile(hookStatePath, JSON.stringify(state, null, 2)).catch(() => {});
       await logTmuxHookEvent(logsDir, {
         ...baseLog,
         event: 'injection_skipped',
-        reason: 'agent_not_running',
+        reason,
         pane_target: paneTarget,
-        pane_current_command: currentCmd,
+        pane_current_command: paneGuard.paneCurrentCommand || undefined,
+        pane_capture_excerpt: paneGuard.paneCapture ? paneGuard.paneCapture.slice(-200) : undefined,
       });
       return;
     }
   } catch {
-    // Non-fatal: if querying pane command fails, proceed with injection.
+    // Non-fatal: if querying pane state fails, proceed with injection.
   }
 
   if (config.dry_run) {
@@ -411,11 +384,14 @@ export async function handleTmuxInjection({
   }
 
   try {
-    await runProcess('tmux', argv.typeArgv, 3000);
-    for (const submit of argv.submitArgv) {
-      await runProcess('tmux', submit, 3000);
-      // Give the pane a moment to process the keypress; avoids occasional missed submits.
-      await new Promise(r => setTimeout(r, 25));
+    const sendResult = await sendPaneInput({
+      paneTarget,
+      prompt,
+      submitKeyPresses: argv.submitArgv.length,
+      submitDelayMs: 25,
+    });
+    if (!sendResult.ok) {
+      throw new Error(sendResult.error || sendResult.reason);
     }
     updateStateForAttempt(true, 'injection_sent');
     await writeFile(hookStatePath, JSON.stringify(state, null, 2)).catch(() => {});

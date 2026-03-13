@@ -14,70 +14,16 @@
 
 Camada de orquestração multiagente para [OpenAI Codex CLI](https://github.com/openai/codex).
 
-## Guias em destaque
+## Novidades na v0.9.0 — Spark Initiative
 
-- [Guia de integração OpenClaw / gateway genérico de notificações](./docs/openclaw-integration.pt.md)
+Spark Initiative é a versão que fortalece o caminho nativo de exploração e inspeção no OMX.
 
-## Idiomas
+- **Harness nativo para `omx explore`** — executa exploração de repositório somente leitura com uma via em Rust mais rápida e mais restrita.
+- **`omx sparkshell`** — superfície nativa voltada ao operador, com resumos de saídas longas e captura explícita de painéis tmux.
+- **Assets nativos multiplataforma** — o caminho de hidratação de `omx-explore-harness`, `omx-sparkshell` e `native-release-manifest.json` agora faz parte do pipeline de release.
+- **CI/CD reforçado** — adiciona configuração explícita de Rust no job `build`, além de `cargo fmt --check` e `cargo clippy -- -D warnings`.
 
-- [English](./README.md)
-- [한국어 (Korean)](./README.ko.md)
-- [日本語 (Japanese)](./README.ja.md)
-- [简体中文 (Chinese Simplified)](./README.zh.md)
-- [繁體中文 (Chinese Traditional)](./README.zh-TW.md)
-- [Tiếng Việt (Vietnamese)](./README.vi.md)
-- [Español (Spanish)](./README.es.md)
-- [Português (Portuguese)](./README.pt.md)
-- [Русский (Russian)](./README.ru.md)
-- [Türkçe (Turkish)](./README.tr.md)
-- [Deutsch (German)](./README.de.md)
-- [Français (French)](./README.fr.md)
-- [Italiano (Italian)](./README.it.md)
-
-
-OMX transforma o Codex de um agente de sessão única em um sistema coordenado com:
-- Role prompts (`/prompts:name`) para agentes especializados
-- Workflow skills (`$name`) para modos de execução repetíveis
-- Orquestração de equipes no tmux (`omx team`, `$team`)
-- Estado persistente e memória via servidores MCP
-
-## Por que OMX
-
-Codex CLI é forte para tarefas diretas. OMX adiciona estrutura para trabalhos maiores:
-- Decomposição e execução em etapas (`team-plan -> team-prd -> team-exec -> team-verify -> team-fix`)
-- Estado persistente do ciclo de vida dos modos (`.omx/state/`)
-- Superfícies de memória e bloco de notas para sessões longas
-- Controles operacionais para início, verificação e cancelamento
-
-OMX é um complemento, não um fork. Utiliza os pontos de extensão nativos do Codex.
-
-## Requisitos
-
-- macOS ou Linux (Windows via WSL2)
-- Node.js >= 20
-- Codex CLI instalado (`npm install -g @openai/codex`)
-- Autenticação do Codex configurada
-
-## Início rápido (3 minutos)
-
-```bash
-npm install -g oh-my-codex
-omx setup
-omx doctor
-```
-
-Perfil de inicialização recomendado para ambientes confiáveis:
-
-```bash
-omx --xhigh --madmax
-```
-
-## Novidades na v0.5.0
-
-- **Configuração com escopo** via `omx setup --scope user|project` para modos de instalação flexíveis.
-- **Roteamento de Spark worker** via `--spark` / `--madmax-spark` — workers da equipe podem usar `gpt-5.3-codex-spark` sem forçar o modelo líder.
-- **Consolidação do catálogo** — removidos prompts obsoletos (`deep-executor`, `scientist`) e 9 skills obsoletas para uma superfície mais enxuta.
-- **Níveis de detalhamento de notificações** para controle granular da saída do CCNotifier.
+Veja também as [notas de release da v0.9.0](./docs/release-notes-0.9.0.md) e o [corpo do release](./docs/release-body-0.9.0.md).
 
 ## Primeira sessão
 
@@ -116,7 +62,7 @@ User
 
 ```bash
 omx                # Iniciar Codex (+ HUD no tmux quando disponível)
-omx setup          # Instalar prompts/skills/config por escopo + projeto AGENTS.md/.omx
+omx setup          # Instalar prompts/skills/config por escopo + .omx do projeto + AGENTS.md específico do escopo
 omx doctor         # Diagnósticos de instalação/execução
 omx doctor --team  # Diagnósticos de Team/swarm
 omx team ...       # Iniciar/status/retomar/encerrar workers tmux da equipe
@@ -175,7 +121,7 @@ Por padrão, OMX injeta:
 -c model_instructions_file="<cwd>/AGENTS.md"
 ```
 
-Isso adiciona as instruções do projeto `AGENTS.md` aos comandos de inicialização do Codex.
+Isso combina o `AGENTS.md` de `CODEX_HOME` com o `AGENTS.md` do projeto (se existir) e depois adiciona o overlay de runtime.
 Estende o comportamento do Codex, mas não substitui nem contorna as políticas centrais do sistema Codex.
 
 Controles:
@@ -240,10 +186,11 @@ Notas:
 
 - `.omx/setup-scope.json` (escopo de instalação persistido)
 - Instalações dependentes do escopo:
-  - `user`: `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`
-  - `project`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`
+  - `user`: `~/.codex/prompts/`, `~/.agents/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
+  - `project`: `./.codex/prompts/`, `./.agents/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
 - Comportamento de inicialização: se o escopo persistido for `project`, o lançamento do `omx` usa automaticamente `CODEX_HOME=./.codex` (a menos que `CODEX_HOME` já esteja definido).
-- O `AGENTS.md` existente é preservado por padrão. Em execuções TTY interativas, o setup pergunta antes de sobrescrever; `--force` sobrescreve sem perguntar (verificações de segurança de sessões ativas continuam aplicáveis).
+- As instruções de inicialização combinam `~/.codex/AGENTS.md` (ou `CODEX_HOME/AGENTS.md`, quando sobrescrito) com o `./AGENTS.md` do projeto e depois adicionam o overlay de runtime.
+- Arquivos `AGENTS.md` existentes nunca são sobrescritos silenciosamente: em TTY interativo o setup pergunta antes de substituir; em modo não interativo a substituição é ignorada, a menos que você use `--force` (verificações de segurança de sessões ativas continuam valendo).
 - Atualizações do `config.toml` (para ambos os escopos):
   - `notify = ["node", "..."]`
   - `model_reasoning_effort = "high"`
@@ -251,7 +198,7 @@ Notas:
   - `[features] multi_agent = true, child_agents_md = true`
   - Entradas de servidores MCP (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`)
   - `[tui] status_line`
-- `AGENTS.md` do projeto
+- `AGENTS.md` específico do escopo
 - Diretórios `.omx/` de execução e configuração do HUD
 
 ## Agentes e skills

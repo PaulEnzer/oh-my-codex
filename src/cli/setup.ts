@@ -28,23 +28,35 @@ import {
   omxAgentsConfigDir,
 } from "../utils/paths.js";
 import { buildMergedConfig, getRootModelName } from "../config/generator.js";
+import {
+  getUnifiedMcpRegistryCandidates,
+  loadUnifiedMcpRegistry,
+  planClaudeCodeMcpSettingsSync,
+  type UnifiedMcpRegistryLoadResult,
+} from "../config/mcp-registry.js";
 import { generateAgentToml } from "../agents/native-config.js";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { getPackageRoot } from "../utils/package.js";
 import { readSessionState, isSessionStale } from "../hooks/session.js";
 import { getCatalogHeadlineCounts } from "./catalog-contract.js";
 import { tryReadCatalogManifest } from "../catalog/reader.js";
+import { DEFAULT_FRONTIER_MODEL } from "../config/models.js";
+import {
+  addGeneratedAgentsMarker,
+  isOmxGeneratedAgentsMd,
+} from "../utils/agents-md.js";
 
 interface SetupOptions {
   force?: boolean;
   dryRun?: boolean;
   scope?: SetupScope;
   verbose?: boolean;
-  agentsOverwritePrompt?: () => Promise<boolean>;
+  agentsOverwritePrompt?: (destinationPath: string) => Promise<boolean>;
   modelUpgradePrompt?: (
     currentModel: string,
     targetModel: string,
   ) => Promise<boolean>;
+  mcpRegistryCandidates?: string[];
 }
 
 /**
@@ -116,7 +128,7 @@ const REQUIRED_TEAM_CLI_API_MARKERS = [
 const DEFAULT_SETUP_SCOPE: SetupScope = "user";
 
 const LEGACY_SETUP_MODEL = "gpt-5.3-codex";
-const DEFAULT_SETUP_MODEL = "gpt-5.4";
+const DEFAULT_SETUP_MODEL = DEFAULT_FRONTIER_MODEL;
 
 function createEmptyCategorySummary(): SetupCategorySummary {
   return {
@@ -305,6 +317,30 @@ async function promptForModelUpgrade(
   }
 }
 
+async function promptForAgentsOverwrite(
+  destinationPath: string,
+): Promise<boolean> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    return false;
+  }
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    const answer = (
+      await rl.question(
+        `Overwrite existing AGENTS.md at "${destinationPath}"? [y/N]: `,
+      )
+    )
+      .trim()
+      .toLowerCase();
+    return answer === "y" || answer === "yes";
+  } finally {
+    rl.close();
+  }
+}
+
 async function resolveSetupScope(
   projectRoot: string,
   requestedScope?: SetupScope,
@@ -392,13 +428,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   {
     const promptsSrc = join(pkgRoot, "prompts");
     const promptsDst = scopeDirs.promptsDir;
-    summary.prompts = await installDirectory(
+    summary.prompts = await installPrompts(
       promptsSrc,
       promptsDst,
-      ".md",
       backupContext,
       { force, dryRun, verbose },
-      "prompt",
     );
     const cleanedLegacyPromptShims = await cleanupLegacySkillPromptShims(
       promptsSrc,
@@ -437,6 +471,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
       scopeDirs.nativeAgentsDir,
       backupContext,
       {
+        force,
         dryRun,
         verbose,
       },
@@ -467,14 +502,47 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 
   // Step 5: Update config.toml
   console.log("[5/8] Updating config.toml...");
+  const registryCandidates = getUnifiedMcpRegistryCandidates();
+  const defaultRegistryCandidates = registryCandidates.slice(0, 1);
+  const sharedMcpRegistry = await loadUnifiedMcpRegistry({
+    candidates: options.mcpRegistryCandidates ?? defaultRegistryCandidates,
+  });
+  if (
+    !options.mcpRegistryCandidates &&
+    !sharedMcpRegistry.sourcePath &&
+    registryCandidates.length > 1 &&
+    existsSync(registryCandidates[1]) &&
+    !existsSync(registryCandidates[0])
+  ) {
+    console.log(
+      `  warning: legacy shared MCP registry detected at ${registryCandidates[1]} but ignored by default; move it to ${registryCandidates[0]} if you still want setup to sync those servers`,
+    );
+  }
+  if (verbose && sharedMcpRegistry.sourcePath) {
+    console.log(
+      `  shared MCP registry: ${sharedMcpRegistry.sourcePath} (${sharedMcpRegistry.servers.length} servers)`,
+    );
+  }
+  for (const warning of sharedMcpRegistry.warnings) {
+    console.log(`  warning: ${warning}`);
+  }
   await updateManagedConfig(
     scopeDirs.codexConfigFile,
     pkgRoot,
     scopeDirs.nativeAgentsDir,
+    sharedMcpRegistry,
     summary.config,
     backupContext,
     { dryRun, verbose, modelUpgradePrompt },
   );
+  if (resolvedScope.scope === "user") {
+    await syncClaudeCodeMcpSettings(
+      sharedMcpRegistry,
+      summary.config,
+      backupContext,
+      { dryRun, verbose },
+    );
+  }
   console.log(`  Config refresh complete (${scopeDirs.codexConfigFile}).\n`);
 
   // Step 5.5: Verify team CLI interop surface is available.
@@ -491,18 +559,23 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   // Step 6: Generate AGENTS.md
   console.log("[6/8] Generating AGENTS.md...");
   const agentsMdSrc = join(pkgRoot, "templates", "AGENTS.md");
-  const agentsMdDst = join(projectRoot, "AGENTS.md");
+  const agentsMdDst =
+    resolvedScope.scope === "project"
+      ? join(projectRoot, "AGENTS.md")
+      : join(scopeDirs.codexHomeDir, "AGENTS.md");
   const agentsMdExists = existsSync(agentsMdDst);
 
-  // Guard: refuse to overwrite AGENTS.md during active session
-  const activeSession = await readSessionState(projectRoot);
+  // Guard: refuse to overwrite project-root AGENTS.md during active session
+  const activeSession =
+    resolvedScope.scope === "project"
+      ? await readSessionState(projectRoot)
+      : null;
   const sessionIsActive = activeSession && !isSessionStale(activeSession);
 
   if (existsSync(agentsMdSrc)) {
     const content = await readFile(agentsMdSrc, "utf-8");
-    const rewritten = applyScopePathRewritesToAgentsTemplate(
-      content,
-      resolvedScope.scope,
+    const rewritten = addGeneratedAgentsMarker(
+      applyScopePathRewritesToAgentsTemplate(content, resolvedScope.scope),
     );
     let changed = true;
     if (agentsMdExists) {
@@ -510,7 +583,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
       changed = existing !== rewritten;
     }
 
-    if (sessionIsActive && agentsMdExists && changed) {
+    if (resolvedScope.scope === "project" && sessionIsActive && agentsMdExists && changed) {
       summary.agentsMd.skipped += 1;
       console.log(
         "  WARNING: Active omx session detected (pid " +
@@ -522,19 +595,39 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
       );
       console.log("  Stop the active session first, then re-run setup.");
     } else {
-      await syncManagedContent(
+      const result = await syncManagedAgentsContent(
         rewritten,
         agentsMdDst,
         summary.agentsMd,
         backupContext,
-        { dryRun, verbose },
-        "AGENTS.md",
+        {
+          agentsOverwritePrompt: options.agentsOverwritePrompt,
+          dryRun,
+          force,
+          verbose,
+        },
       );
-      if (summary.agentsMd.updated > 0) {
-        console.log("  Generated AGENTS.md in project root.");
-      } else if (summary.agentsMd.unchanged > 0) {
-        console.log("  AGENTS.md already up to date.");
+
+      if (result === "updated") {
+        console.log(
+          resolvedScope.scope === "project"
+            ? "  Generated AGENTS.md in project root."
+            : `  Generated AGENTS.md in ${scopeDirs.codexHomeDir}.`,
+        );
+      } else if (result === "unchanged") {
+        console.log(
+          resolvedScope.scope === "project"
+            ? "  AGENTS.md already up to date in project root."
+            : `  AGENTS.md already up to date in ${scopeDirs.codexHomeDir}.`,
+        );
+      } else if (agentsMdExists) {
+        console.log(
+          `  Skipped AGENTS.md overwrite for ${agentsMdDst}. Re-run interactively to confirm or use --force.`,
+        );
       }
+    }
+    if (resolvedScope.scope === "user") {
+      console.log("  User scope leaves project AGENTS.md unchanged.");
     }
   } else {
     summary.agentsMd.skipped += 1;
@@ -587,6 +680,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   console.log("  3. Skills are available via /skills or implicit matching");
   console.log("  4. The AGENTS.md orchestration brain is loaded automatically");
   console.log("  5. Native agent roles registered in config.toml [agents.*]");
+  console.log('  6. "omx explore" and "omx sparkshell" can hydrate native release binaries on first use; source installs still allow repo-local fallbacks and OMX_EXPLORE_BIN / OMX_SPARKSHELL_BIN overrides');
   if (isGitHubCliConfigured()) {
     console.log("\nSupport the project: gh repo star Yeachan-Heo/oh-my-codex");
   }
@@ -711,19 +805,109 @@ async function syncManagedContent(
   }
 }
 
-async function installDirectory(
+async function syncManagedAgentsContent(
+  content: string,
+  dstPath: string,
+  summary: SetupCategorySummary,
+  backupContext: SetupBackupContext,
+  options: Pick<
+    SetupOptions,
+    "agentsOverwritePrompt" | "dryRun" | "force" | "verbose"
+  >,
+): Promise<"updated" | "unchanged" | "skipped"> {
+  const destinationExists = existsSync(dstPath);
+  let existing = "";
+  let changed = true;
+
+  if (destinationExists) {
+    existing = await readFile(dstPath, "utf-8");
+    changed = existing !== content;
+  }
+
+  if (!changed) {
+    summary.unchanged += 1;
+    return "unchanged";
+  }
+
+  if (destinationExists && !options.force) {
+    if (options.dryRun) {
+      summary.skipped += 1;
+      if (options.verbose) {
+        console.log(`  would prompt before overwriting ${dstPath}`);
+      }
+      return "skipped";
+    }
+
+    const shouldOverwrite = options.agentsOverwritePrompt
+      ? await options.agentsOverwritePrompt(dstPath)
+      : await promptForAgentsOverwrite(dstPath);
+
+    if (!shouldOverwrite) {
+      summary.skipped += 1;
+      if (options.verbose) {
+        const managedLabel = isOmxGeneratedAgentsMd(existing)
+          ? "managed"
+          : "unmanaged";
+        console.log(`  skipped ${managedLabel} AGENTS.md at ${dstPath}`);
+      }
+      return "skipped";
+    }
+  }
+
+  if (await ensureBackup(dstPath, destinationExists, backupContext, options)) {
+    summary.backedUp += 1;
+  }
+
+  if (!options.dryRun) {
+    await mkdir(dirname(dstPath), { recursive: true });
+    await writeFile(dstPath, content);
+  }
+
+  summary.updated += 1;
+  if (options.verbose) {
+    console.log(
+      `  ${options.dryRun ? "would update" : "updated"} AGENTS ${dstPath}`,
+    );
+  }
+  return "updated";
+}
+
+async function installPrompts(
   srcDir: string,
   dstDir: string,
-  ext: string,
   backupContext: SetupBackupContext,
   options: SetupOptions,
-  kindLabel: string,
 ): Promise<SetupCategorySummary> {
   const summary = createEmptyCategorySummary();
   if (!existsSync(srcDir)) return summary;
+
+  const manifest = tryReadCatalogManifest();
+  const agentStatusByName = manifest
+    ? new Map(manifest.agents.map((agent) => [agent.name, agent.status]))
+    : null;
+  const isInstallableStatus = (status: string | undefined): boolean =>
+    status === "active" || status === "internal";
+
   const files = await readdir(srcDir);
+  const staleCandidatePromptNames = new Set(
+    manifest?.agents.map((agent) => agent.name) ?? [],
+  );
+
   for (const file of files) {
-    if (!file.endsWith(ext)) continue;
+    if (!file.endsWith('.md')) continue;
+    const promptName = file.slice(0, -3);
+    staleCandidatePromptNames.add(promptName);
+
+    const status = agentStatusByName?.get(promptName);
+    if (agentStatusByName && !isInstallableStatus(status)) {
+      summary.skipped += 1;
+      if (options.verbose) {
+        const label = status ?? 'unlisted';
+        console.log(`  skipped ${file} (status: ${label})`);
+      }
+      continue;
+    }
+
     const src = join(srcDir, file);
     const dst = join(dstDir, file);
     const srcStat = await stat(src);
@@ -734,9 +918,34 @@ async function installDirectory(
       summary,
       backupContext,
       options,
-      `${kindLabel} ${file}`,
+      `prompt ${file}`,
     );
   }
+
+  if (options.force && manifest && existsSync(dstDir)) {
+    const installedFiles = await readdir(dstDir);
+    for (const file of installedFiles) {
+      if (!file.endsWith('.md')) continue;
+      const promptName = file.slice(0, -3);
+      const status = agentStatusByName?.get(promptName);
+      if (isInstallableStatus(status)) continue;
+      if (!staleCandidatePromptNames.has(promptName) && status === undefined) continue;
+
+      const stalePromptPath = join(dstDir, file);
+      if (!existsSync(stalePromptPath)) continue;
+
+      if (!options.dryRun) {
+        await rm(stalePromptPath, { force: true });
+      }
+      summary.removed += 1;
+      if (options.verbose) {
+        const prefix = options.dryRun ? 'would remove stale prompt' : 'removed stale prompt';
+        const label = status ?? 'unlisted';
+        console.log(`  ${prefix} ${file} (status: ${label})`);
+      }
+    }
+  }
+
   return summary;
 }
 
@@ -744,7 +953,7 @@ async function refreshNativeAgentConfigs(
   pkgRoot: string,
   agentsDir: string,
   backupContext: SetupBackupContext,
-  options: Pick<SetupOptions, "dryRun" | "verbose">,
+  options: Pick<SetupOptions, "dryRun" | "verbose" | "force">,
 ): Promise<SetupCategorySummary> {
   const summary = createEmptyCategorySummary();
 
@@ -752,7 +961,28 @@ async function refreshNativeAgentConfigs(
     await mkdir(agentsDir, { recursive: true });
   }
 
+  const manifest = tryReadCatalogManifest();
+  const agentStatusByName = manifest
+    ? new Map(manifest.agents.map((agent) => [agent.name, agent.status]))
+    : null;
+  const isInstallableStatus = (status: string | undefined): boolean =>
+    status === "active" || status === "internal";
+  const staleCandidateNativeAgentNames = new Set(
+    manifest?.agents.map((agent) => agent.name) ?? [],
+  );
+
   for (const [name, agent] of Object.entries(AGENT_DEFINITIONS)) {
+    staleCandidateNativeAgentNames.add(name);
+    const status = agentStatusByName?.get(name);
+    if (agentStatusByName && !isInstallableStatus(status)) {
+      if (options.verbose) {
+        const label = status ?? "unlisted";
+        console.log(`  skipped native agent ${name}.toml (status: ${label})`);
+      }
+      summary.skipped += 1;
+      continue;
+    }
+
     const promptPath = join(pkgRoot, "prompts", `${name}.md`);
     if (!existsSync(promptPath)) {
       continue;
@@ -769,6 +999,30 @@ async function refreshNativeAgentConfigs(
       options,
       `native agent ${name}.toml`,
     );
+  }
+
+  if (options.force && manifest && existsSync(agentsDir)) {
+    const installedFiles = await readdir(agentsDir);
+    for (const file of installedFiles) {
+      if (!file.endsWith('.toml')) continue;
+      const agentName = file.slice(0, -5);
+      const status = agentStatusByName?.get(agentName);
+      if (isInstallableStatus(status)) continue;
+      if (!staleCandidateNativeAgentNames.has(agentName) && status === undefined) continue;
+
+      const staleAgentPath = join(agentsDir, file);
+      if (!existsSync(staleAgentPath)) continue;
+
+      if (!options.dryRun) {
+        await rm(staleAgentPath, { force: true });
+      }
+      summary.removed += 1;
+      if (options.verbose) {
+        const prefix = options.dryRun ? 'would remove stale native agent' : 'removed stale native agent';
+        const label = status ?? 'unlisted';
+        console.log(`  ${prefix} ${file} (status: ${label})`);
+      }
+    }
   }
 
   return summary;
@@ -860,6 +1114,7 @@ async function updateManagedConfig(
   configPath: string,
   pkgRoot: string,
   agentsConfigDir: string,
+  sharedMcpRegistry: UnifiedMcpRegistryLoadResult,
   summary: SetupCategorySummary,
   backupContext: SetupBackupContext,
   options: Pick<SetupOptions, "dryRun" | "verbose" | "modelUpgradePrompt">,
@@ -887,6 +1142,8 @@ async function updateManagedConfig(
   const finalConfig = buildMergedConfig(existing, pkgRoot, {
     agentsConfigDir,
     modelOverride,
+    sharedMcpServers: sharedMcpRegistry.servers,
+    sharedMcpRegistrySource: sharedMcpRegistry.sourcePath,
     verbose: options.verbose,
   });
   const changed = existing !== finalConfig;
@@ -928,6 +1185,54 @@ async function updateManagedConfig(
       `  ${options.dryRun ? "would update" : "updated"} config ${configPath}`,
     );
   }
+}
+
+function getClaudeCodeSettingsPath(homeDir = homedir()): string {
+  return join(homeDir, ".claude", "settings.json");
+}
+
+async function syncClaudeCodeMcpSettings(
+  sharedMcpRegistry: UnifiedMcpRegistryLoadResult,
+  summary: SetupCategorySummary,
+  backupContext: SetupBackupContext,
+  options: Pick<SetupOptions, "dryRun" | "verbose">,
+): Promise<void> {
+  if (sharedMcpRegistry.servers.length === 0) return;
+
+  const settingsPath = getClaudeCodeSettingsPath();
+  const existing = existsSync(settingsPath)
+    ? await readFile(settingsPath, "utf-8")
+    : "";
+  const syncPlan = planClaudeCodeMcpSettingsSync(
+    existing,
+    sharedMcpRegistry.servers,
+  );
+
+  for (const warning of syncPlan.warnings) {
+    console.log(`  warning: ${warning}`);
+  }
+  if (syncPlan.warnings.length > 0) {
+    summary.skipped += 1;
+    return;
+  }
+  if (!syncPlan.content) {
+    summary.unchanged += 1;
+    if (options.verbose && syncPlan.unchanged.length > 0) {
+      console.log(
+        `  shared MCP servers already present in Claude Code settings (${settingsPath})`,
+      );
+    }
+    return;
+  }
+
+  await syncManagedContent(
+    syncPlan.content,
+    settingsPath,
+    summary,
+    backupContext,
+    options,
+    `Claude Code MCP settings ${settingsPath} (+${syncPlan.added.join(", ")})`,
+  );
 }
 
 async function setupNotifyHook(

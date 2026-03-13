@@ -88,7 +88,7 @@ describe('config generator', () => {
     }
   });
 
-  it('writes model_reasoning_effort and developer_instructions', async () => {
+  it('writes model_reasoning_effort and strengthened developer_instructions', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
     try {
       const configPath = join(wd, 'config.toml');
@@ -97,6 +97,9 @@ describe('config generator', () => {
 
       assert.match(toml, /^model_reasoning_effort = "high"$/m);
       assert.match(toml, /^developer_instructions = "You have oh-my-codex installed/m);
+      assert.match(toml, /AGENTS\.md is your orchestration brain and the main orchestration surface/);
+      assert.match(toml, /Use \/prompts:<role> and spawned role prompts for specialized subagent work/);
+      assert.match(toml, /Treat role prompts as narrower execution surfaces under AGENTS\.md authority/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

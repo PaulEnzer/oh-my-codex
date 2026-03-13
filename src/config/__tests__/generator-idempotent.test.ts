@@ -453,4 +453,96 @@ describe("config generator idempotency (#384)", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it("writes only installable catalog agents into the OMX agent block", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      await mergeConfig(configPath, wd);
+      const toml = await readFile(configPath, "utf-8");
+
+      assert.match(toml, /^\[agents\.executor\]$/m, "active agent kept");
+      assert.match(toml, /^\[agents\."code-simplifier"\]$/m, "internal agent kept");
+      assert.doesNotMatch(toml, /^\[agents\."style-reviewer"\]$/m, "merged agent omitted");
+      assert.doesNotMatch(toml, /^\[agents\."quality-reviewer"\]$/m, "merged agent omitted");
+      assert.doesNotMatch(toml, /^\[agents\."product-manager"\]$/m, "merged product agent omitted");
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("syncs shared MCP registry entries in a dedicated managed block", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const first = buildMergedConfig("", wd, {
+        sharedMcpServers: [
+          {
+            name: "eslint",
+            command: "npx",
+            args: ["@eslint/mcp@latest"],
+            enabled: true,
+            startupTimeoutSec: 12,
+          },
+        ],
+        sharedMcpRegistrySource: "/tmp/.omx/mcp-registry.json",
+      });
+      const second = buildMergedConfig(first, wd, {
+        sharedMcpServers: [
+          {
+            name: "eslint",
+            command: "npx",
+            args: ["@eslint/mcp@latest"],
+            enabled: true,
+            startupTimeoutSec: 12,
+          },
+        ],
+        sharedMcpRegistrySource: "/tmp/.omx/mcp-registry.json",
+      });
+
+      assert.equal(
+        count(second, /oh-my-codex \(OMX\) Shared MCP Registry Sync/g),
+        1,
+        "shared MCP sync block should appear once",
+      );
+      assert.equal(
+        count(second, /^\[mcp_servers\.eslint\]$/gm),
+        1,
+        "shared eslint MCP table should appear once",
+      );
+      assert.match(second, /# Source: \/tmp\/\.omx\/mcp-registry\.json/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("skips shared MCP entries that already exist in user config", () => {
+    const existing = [
+      "[mcp_servers.gitnexus]",
+      'command = "custom"',
+      'args = ["serve"]',
+      "",
+    ].join("\n");
+    const merged = buildMergedConfig(existing, "/tmp/omx", {
+      sharedMcpServers: [
+        {
+          name: "gitnexus",
+          command: "gitnexus",
+          args: ["mcp"],
+          enabled: true,
+        },
+        {
+          name: "eslint",
+          command: "npx",
+          args: ["@eslint/mcp@latest"],
+          enabled: true,
+        },
+      ],
+      sharedMcpRegistrySource: "/tmp/.omx/mcp-registry.json",
+    });
+
+    assert.equal(count(merged, /^\[mcp_servers\.gitnexus\]$/gm), 1);
+    assert.match(merged, /command = "custom"/);
+    assert.equal(count(merged, /^\[mcp_servers\.eslint\]$/gm), 1);
+  });
+
 });

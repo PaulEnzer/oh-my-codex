@@ -1,5 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve as resolvePath } from 'node:path';
+import { readModeState } from '../modes/base.js';
+import { shutdownTeam } from './runtime.js';
 import {
   TEAM_NAME_SAFE_PATTERN,
   WORKER_NAME_SAFE_PATTERN,
@@ -11,12 +13,16 @@ import {
   type TeamEventType,
   type TeamTaskApprovalStatus,
 } from './contracts.js';
+import { readTeamEvents, waitForTeamEvent } from './state/events.js';
 import {
   teamSendMessage as sendDirectMessage,
   teamBroadcast as broadcastMessage,
   teamListMailbox as listMailboxMessages,
   teamMarkMessageDelivered as markMessageDelivered,
   teamMarkMessageNotified as markMessageNotified,
+  teamListDispatchRequests,
+  teamMarkDispatchRequestNotified,
+  teamMarkDispatchRequestDelivered,
   teamCreateTask,
   teamReadTask,
   teamListTasks,
@@ -24,6 +30,7 @@ import {
   teamClaimTask,
   teamTransitionTaskStatus,
   teamReleaseTaskClaim,
+  teamCleanup,
   teamReadConfig,
   teamReadManifest,
   teamReadWorkerStatus,
@@ -33,14 +40,15 @@ import {
   teamWriteWorkerIdentity,
   teamAppendEvent,
   teamGetSummary,
-  teamCleanup,
   teamWriteShutdownRequest,
   teamReadShutdownAck,
   teamReadMonitorSnapshot,
   teamWriteMonitorSnapshot,
   teamReadTaskApproval,
   teamWriteTaskApproval,
+  type TeamEvent,
   type TeamMonitorSnapshotState,
+  type TeamSummary,
 } from './team-ops.js';
 
 const TEAM_UPDATE_TASK_MUTABLE_FIELDS = new Set(['subject', 'description', 'blocked_by', 'requires_code_change']);
@@ -69,6 +77,7 @@ export const LEGACY_TEAM_MCP_TOOLS = [
   'team_append_event',
   'team_get_summary',
   'team_cleanup',
+  'team_orphan_cleanup',
   'team_write_shutdown_request',
   'team_read_shutdown_ack',
   'team_read_monitor_snapshot',
@@ -98,8 +107,13 @@ export const TEAM_API_OPERATIONS = [
   'write-worker-inbox',
   'write-worker-identity',
   'append-event',
+  'read-events',
+  'await-event',
+  'read-idle-state',
+  'read-stall-state',
   'get-summary',
   'cleanup',
+  'orphan-cleanup',
   'write-shutdown-request',
   'read-shutdown-ack',
   'read-monitor-snapshot',
@@ -114,8 +128,206 @@ export type TeamApiEnvelope =
   | { ok: true; operation: TeamApiOperation; data: Record<string, unknown> }
   | { ok: false; operation: TeamApiOperation | 'unknown'; error: { code: string; message: string } };
 
+const TEAM_STATE_EVENT_WINDOW = 50;
+
+async function markLatestMailboxDispatchDelivered(
+  teamName: string,
+  worker: string,
+  messageId: string,
+  cwd: string,
+): Promise<{ matched_request_id: string | null; dispatch_updated: boolean }> {
+  const requests = await teamListDispatchRequests(teamName, cwd, { kind: 'mailbox', to_worker: worker });
+  const matching = requests
+    .filter((request) => request.message_id === messageId)
+    .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+
+  const latest = matching[0];
+  if (!latest) {
+    return { matched_request_id: null, dispatch_updated: false };
+  }
+
+  if (latest.status === 'pending') {
+    await teamMarkDispatchRequestNotified(teamName, latest.request_id, { message_id: messageId }, cwd);
+  }
+
+  const delivered = await teamMarkDispatchRequestDelivered(teamName, latest.request_id, { message_id: messageId }, cwd);
+  return {
+    matched_request_id: latest.request_id,
+    dispatch_updated: delivered?.status === 'delivered',
+  };
+}
+
 function isFiniteInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && Number.isFinite(value);
+}
+
+function parseOptionalNonNegativeInteger(value: unknown, fieldName: string): number | null {
+  if (value === undefined) return null;
+  if (!isFiniteInteger(value) || value < 0) {
+    throw new Error(`${fieldName} must be a non-negative integer when provided`);
+  }
+  return value;
+}
+
+function parseOptionalBoolean(value: unknown, fieldName: string): boolean | null {
+  if (value === undefined) return null;
+  if (typeof value !== 'boolean') {
+    throw new Error(`${fieldName} must be a boolean when provided`);
+  }
+  return value;
+}
+
+function parseOptionalEventType(value: unknown): TeamEventType | 'worker_idle' | null {
+  if (value === undefined) return null;
+  if (typeof value !== 'string') {
+    throw new Error('type must be a string when provided');
+  }
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new Error('type cannot be empty when provided');
+  }
+  if (!TEAM_EVENT_TYPES.includes(normalized as TeamEventType)) {
+    throw new Error(`type must be one of: ${TEAM_EVENT_TYPES.join(', ')}`);
+  }
+  return normalized as TeamEventType | 'worker_idle';
+}
+
+function selectRecentEvents(events: TeamEvent[]): TeamEvent[] {
+  return events.slice(Math.max(0, events.length - TEAM_STATE_EVENT_WINDOW));
+}
+
+function listTeamWorkerNames(summary: TeamSummary | null, snapshot: TeamMonitorSnapshotState | null): string[] {
+  const names = new Set<string>();
+  for (const worker of summary?.workers ?? []) {
+    names.add(worker.name);
+  }
+  for (const workerName of Object.keys(snapshot?.workerStateByName ?? {})) {
+    names.add(workerName);
+  }
+  return [...names].sort();
+}
+
+function findLatestEventByType(events: TeamEvent[], types: TeamEvent['type'][]): TeamEvent | null {
+  const allowed = new Set(types);
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event && allowed.has(event.type)) {
+      return event;
+    }
+  }
+  return null;
+}
+
+function findLatestWorkerIdleEvent(events: TeamEvent[], workerName: string): TeamEvent | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!event || event.worker !== workerName) continue;
+    if (event.type === 'worker_state_changed' && event.state === 'idle') {
+      return event;
+    }
+  }
+  return null;
+}
+
+function summarizeEvent(event: TeamEvent | null): Record<string, unknown> | null {
+  if (!event) return null;
+  return {
+    event_id: event.event_id,
+    type: event.type,
+    worker: event.worker,
+    task_id: event.task_id ?? null,
+    created_at: event.created_at,
+    reason: event.reason ?? null,
+    state: event.state ?? null,
+    prev_state: event.prev_state ?? null,
+    source_type: event.source_type ?? null,
+    worker_count: event.worker_count ?? null,
+  };
+}
+
+function buildIdleState(
+  teamName: string,
+  summary: TeamSummary | null,
+  snapshot: TeamMonitorSnapshotState | null,
+  recentEvents: TeamEvent[],
+): Record<string, unknown> {
+  const workerNames = listTeamWorkerNames(summary, snapshot);
+  const idleWorkers = workerNames.filter((workerName) => snapshot?.workerStateByName[workerName] === 'idle');
+  const nonIdleWorkers = workerNames.filter((workerName) => !idleWorkers.includes(workerName));
+  const lastIdleTransitionByWorker = Object.fromEntries(
+    workerNames.map((workerName) => [workerName, summarizeEvent(findLatestWorkerIdleEvent(recentEvents, workerName))]),
+  );
+  const lastAllWorkersIdleEvent = findLatestEventByType(recentEvents, ['all_workers_idle']);
+
+  return {
+    team_name: teamName,
+    worker_count: summary?.workerCount ?? workerNames.length,
+    idle_worker_count: idleWorkers.length,
+    idle_workers: idleWorkers,
+    non_idle_workers: nonIdleWorkers,
+    all_workers_idle: workerNames.length > 0 && idleWorkers.length === workerNames.length,
+    last_idle_transition_by_worker: lastIdleTransitionByWorker,
+    last_all_workers_idle_event: summarizeEvent(lastAllWorkersIdleEvent),
+    source: {
+      summary_available: summary !== null,
+      snapshot_available: snapshot !== null,
+      recent_event_count: recentEvents.length,
+    },
+  };
+}
+
+function buildStallState(
+  teamName: string,
+  summary: TeamSummary | null,
+  snapshot: TeamMonitorSnapshotState | null,
+  recentEvents: TeamEvent[],
+): Record<string, unknown> {
+  const idleState = buildIdleState(teamName, summary, snapshot, recentEvents);
+  const workerNames = listTeamWorkerNames(summary, snapshot);
+  const deadWorkers = workerNames.filter((workerName) => summary?.workers.find((worker) => worker.name === workerName)?.alive === false);
+  const stalledWorkers = [...(summary?.nonReportingWorkers ?? [])].sort();
+  const latestAllWorkersIdleEvent = findLatestEventByType(recentEvents, ['all_workers_idle']);
+  const latestLeaderNudgeEvent = findLatestEventByType(recentEvents, ['team_leader_nudge']);
+  const latestDeferredEvent = findLatestEventByType(recentEvents, ['leader_notification_deferred']);
+  const pendingTaskCount = (summary?.tasks.pending ?? 0) + (summary?.tasks.blocked ?? 0) + (summary?.tasks.in_progress ?? 0);
+  const leaderStale = pendingTaskCount > 0 && idleState.all_workers_idle === true && (
+    latestLeaderNudgeEvent !== null
+    || latestDeferredEvent !== null
+    || latestAllWorkersIdleEvent !== null
+  );
+  const teamStalled = stalledWorkers.length > 0 || leaderStale || (deadWorkers.length > 0 && pendingTaskCount > 0);
+  const reasons: string[] = [];
+
+  if (stalledWorkers.length > 0) {
+    reasons.push(`workers_non_reporting:${stalledWorkers.join(',')}`);
+  }
+  if (deadWorkers.length > 0 && pendingTaskCount > 0) {
+    reasons.push(`dead_workers_with_pending_work:${deadWorkers.join(',')}`);
+  }
+  if (leaderStale) {
+    const leaderSignal = latestLeaderNudgeEvent ?? latestDeferredEvent ?? latestAllWorkersIdleEvent;
+    reasons.push(`leader_attention_pending:${leaderSignal?.type ?? 'all_workers_idle'}`);
+  }
+
+  return {
+    team_name: teamName,
+    team_stalled: teamStalled,
+    leader_stale: leaderStale,
+    stalled_workers: stalledWorkers,
+    dead_workers: deadWorkers,
+    pending_task_count: pendingTaskCount,
+    all_workers_idle: idleState.all_workers_idle,
+    idle_workers: idleState.idle_workers,
+    reasons,
+    last_all_workers_idle_event: summarizeEvent(latestAllWorkersIdleEvent),
+    last_team_leader_nudge_event: summarizeEvent(latestLeaderNudgeEvent),
+    last_leader_notification_deferred_event: summarizeEvent(latestDeferredEvent),
+    source: {
+      summary_available: summary !== null,
+      snapshot_available: snapshot !== null,
+      recent_event_count: recentEvents.length,
+    },
+  };
 }
 
 function parseValidatedTaskIdArray(value: unknown, fieldName: string): string[] {
@@ -310,7 +522,18 @@ export async function executeTeamApiOperation(
           return { ok: false, operation, error: { code: 'invalid_input', message: 'team_name, worker, message_id are required' } };
         }
         const updated = await markMessageDelivered(teamName, worker, messageId, cwd);
-        return { ok: true, operation, data: { worker, message_id: messageId, updated } };
+        const dispatch = await markLatestMailboxDispatchDelivered(teamName, worker, messageId, cwd);
+        return {
+          ok: true,
+          operation,
+          data: {
+            worker,
+            message_id: messageId,
+            updated,
+            dispatch_request_id: dispatch.matched_request_id,
+            dispatch_updated: dispatch.dispatch_updated,
+          },
+        };
       }
       case 'mailbox-mark-notified': {
         const teamName = String(args.team_name || '').trim();
@@ -422,6 +645,8 @@ export async function executeTeamApiOperation(
         const from = String(args.from || '').trim();
         const to = String(args.to || '').trim();
         const claimToken = String(args.claim_token || '').trim();
+        const transitionResult = args.result;
+        const transitionError = args.error;
         if (!teamName || !taskId || !from || !to || !claimToken) {
           return { ok: false, operation, error: { code: 'invalid_input', message: 'team_name, task_id, from, to, claim_token are required' } };
         }
@@ -429,7 +654,24 @@ export async function executeTeamApiOperation(
         if (!allowed.has(from) || !allowed.has(to)) {
           return { ok: false, operation, error: { code: 'invalid_input', message: 'from and to must be valid task statuses' } };
         }
-        const result = await teamTransitionTaskStatus(teamName, taskId, from as TeamTaskStatus, to as TeamTaskStatus, claimToken, cwd);
+        if (transitionResult !== undefined && typeof transitionResult !== 'string') {
+          return { ok: false, operation, error: { code: 'invalid_input', message: 'result must be a string when provided' } };
+        }
+        if (transitionError !== undefined && typeof transitionError !== 'string') {
+          return { ok: false, operation, error: { code: 'invalid_input', message: 'error must be a string when provided' } };
+        }
+        const result = await teamTransitionTaskStatus(
+          teamName,
+          taskId,
+          from as TeamTaskStatus,
+          to as TeamTaskStatus,
+          claimToken,
+          cwd,
+          {
+            result: typeof transitionResult === 'string' ? transitionResult : undefined,
+            error: typeof transitionError === 'string' ? transitionError : undefined,
+          },
+        );
         return { ok: true, operation, data: result as unknown as Record<string, unknown> };
       }
       case 'release-task-claim': {
@@ -534,8 +776,109 @@ export async function executeTeamApiOperation(
           task_id: args.task_id as string | undefined,
           message_id: (args.message_id as string | undefined) ?? null,
           reason: args.reason as string | undefined,
+          state: args.state as string | undefined,
+          prev_state: args.prev_state as string | undefined,
+          to_worker: args.to_worker as string | undefined,
+          worker_count: typeof args.worker_count === 'number' ? args.worker_count : undefined,
+          source_type: args.source_type as string | undefined,
         }, cwd);
         return { ok: true, operation, data: { event } };
+      }
+      case 'read-events': {
+        const teamName = String(args.team_name || '').trim();
+        if (!teamName) {
+          return { ok: false, operation, error: { code: 'invalid_input', message: 'team_name is required' } };
+        }
+        const wakeableOnly = parseOptionalBoolean(args.wakeable_only, 'wakeable_only');
+        const eventType = parseOptionalEventType(args.type);
+        const worker = typeof args.worker === 'string' ? args.worker.trim() : '';
+        const taskId = typeof args.task_id === 'string' ? args.task_id.trim() : '';
+        const events = await readTeamEvents(teamName, cwd, {
+          afterEventId: typeof args.after_event_id === 'string' ? args.after_event_id.trim() || undefined : undefined,
+          wakeableOnly: wakeableOnly ?? false,
+          type: eventType ?? undefined,
+          worker: worker || undefined,
+          taskId: taskId || undefined,
+        });
+        return {
+          ok: true,
+          operation,
+          data: {
+            count: events.length,
+            cursor: events.at(-1)?.event_id ?? (typeof args.after_event_id === 'string' ? args.after_event_id.trim() : ''),
+            events,
+          },
+        };
+      }
+      case 'await-event': {
+        const teamName = String(args.team_name || '').trim();
+        if (!teamName) {
+          return { ok: false, operation, error: { code: 'invalid_input', message: 'team_name is required' } };
+        }
+        const timeoutMs = parseOptionalNonNegativeInteger(args.timeout_ms, 'timeout_ms') ?? 30_000;
+        const pollMs = parseOptionalNonNegativeInteger(args.poll_ms, 'poll_ms');
+        const wakeableOnly = parseOptionalBoolean(args.wakeable_only, 'wakeable_only');
+        const eventType = parseOptionalEventType(args.type);
+        const worker = typeof args.worker === 'string' ? args.worker.trim() : '';
+        const taskId = typeof args.task_id === 'string' ? args.task_id.trim() : '';
+        const result = await waitForTeamEvent(teamName, cwd, {
+          afterEventId: typeof args.after_event_id === 'string' ? args.after_event_id.trim() || undefined : undefined,
+          timeoutMs,
+          pollMs: pollMs ?? undefined,
+          wakeableOnly: wakeableOnly ?? false,
+          type: eventType ?? undefined,
+          worker: worker || undefined,
+          taskId: taskId || undefined,
+        });
+        return {
+          ok: true,
+          operation,
+          data: {
+            status: result.status,
+            cursor: result.cursor,
+            event: result.event ?? null,
+          },
+        };
+      }
+      case 'read-idle-state': {
+        const teamName = String(args.team_name || '').trim();
+        if (!teamName) {
+          return { ok: false, operation, error: { code: 'invalid_input', message: 'team_name is required' } };
+        }
+        const [summary, snapshot, events] = await Promise.all([
+          teamGetSummary(teamName, cwd),
+          teamReadMonitorSnapshot(teamName, cwd),
+          readTeamEvents(teamName, cwd),
+        ]);
+        if (!summary) {
+          return { ok: false, operation, error: { code: 'team_not_found', message: 'team_not_found' } };
+        }
+        const recentEvents = selectRecentEvents(events);
+        return {
+          ok: true,
+          operation,
+          data: buildIdleState(teamName, summary, snapshot, recentEvents),
+        };
+      }
+      case 'read-stall-state': {
+        const teamName = String(args.team_name || '').trim();
+        if (!teamName) {
+          return { ok: false, operation, error: { code: 'invalid_input', message: 'team_name is required' } };
+        }
+        const [summary, snapshot, events] = await Promise.all([
+          teamGetSummary(teamName, cwd),
+          teamReadMonitorSnapshot(teamName, cwd),
+          readTeamEvents(teamName, cwd),
+        ]);
+        if (!summary) {
+          return { ok: false, operation, error: { code: 'team_not_found', message: 'team_not_found' } };
+        }
+        const recentEvents = selectRecentEvents(events);
+        return {
+          ok: true,
+          operation,
+          data: buildStallState(teamName, summary, snapshot, recentEvents),
+        };
       }
       case 'get-summary': {
         const teamName = String(args.team_name || '').trim();
@@ -548,8 +891,20 @@ export async function executeTeamApiOperation(
       case 'cleanup': {
         const teamName = String(args.team_name || '').trim();
         if (!teamName) return { ok: false, operation, error: { code: 'invalid_input', message: 'team_name is required' } };
+        const force = args.force === true;
+        const ralphFromState = await readModeState('team', cwd).then(
+          (state) => state?.active === true && state?.linked_ralph === true && state?.team_name === teamName,
+          () => false,
+        );
+        const ralph = args.ralph === true || ralphFromState;
+        await shutdownTeam(teamName, cwd, { force, ralph });
+        return { ok: true, operation, data: { team_name: teamName, cleanup_mode: 'shutdown' } };
+      }
+      case 'orphan-cleanup': {
+        const teamName = String(args.team_name || '').trim();
+        if (!teamName) return { ok: false, operation, error: { code: 'invalid_input', message: 'team_name is required' } };
         await teamCleanup(teamName, cwd);
-        return { ok: true, operation, data: { team_name: teamName } };
+        return { ok: true, operation, data: { team_name: teamName, cleanup_mode: 'orphan_cleanup' } };
       }
       case 'write-shutdown-request': {
         const teamName = String(args.team_name || '').trim();

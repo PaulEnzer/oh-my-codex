@@ -8,6 +8,8 @@ import {
   detectPrimaryKeyword,
   recordSkillActivation,
   SKILL_ACTIVE_STATE_FILE,
+  DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS,
+  DEEP_INTERVIEW_INPUT_LOCK_MESSAGE,
 } from '../keyword-detector.js';
 import { isUnderspecifiedForExecution, applyRalplanGate } from '../keyword-detector.js';
 import { KEYWORD_TRIGGER_DEFINITIONS } from '../keyword-registry.js';
@@ -106,7 +108,7 @@ describe('keyword detector swarm/team compatibility', () => {
   });
 
   it('does not trigger team keyword from filesystem/team-state path text', () => {
-    const match = detectPrimaryKeyword('You have 1 new message(s). Check .omx/state/team/execute-plan/mailbox/worker-3.json');
+    const match = detectPrimaryKeyword('You have 1 new message(s). Read .omx/state/team/execute-plan/mailbox/worker-3.json, act now, reply with concrete progress, then continue assigned work or next feasible task.');
     assert.equal(match, null);
   });
 
@@ -235,6 +237,56 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(persisted.skill, 'autopilot');
       assert.equal(persisted.phase, 'planning');
       assert.equal(persisted.active, true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('acquires a deep-interview input lock immediately on activation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-deep-interview-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(stateDir, { recursive: true });
+      const result = await recordSkillActivation({
+        stateDir,
+        text: 'please run a deep interview before planning',
+        nowIso: '2026-02-25T00:00:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'deep-interview');
+      assert.equal(result.input_lock?.active, true);
+      assert.deepEqual(result.input_lock?.blocked_inputs, [...DEEP_INTERVIEW_BLOCKED_APPROVAL_INPUTS]);
+      assert.equal(result.input_lock?.blocked_inputs.includes('next i should'), true);
+      assert.equal(result.input_lock?.message, DEEP_INTERVIEW_INPUT_LOCK_MESSAGE);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('releases the deep-interview input lock on abort via cancel keyword', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-deep-interview-abort-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    try {
+      await mkdir(stateDir, { recursive: true });
+      await recordSkillActivation({
+        stateDir,
+        text: 'please run deep interview',
+        nowIso: '2026-02-25T00:00:00.000Z',
+      });
+
+      const result = await recordSkillActivation({
+        stateDir,
+        text: 'abort now',
+        nowIso: '2026-02-25T00:05:00.000Z',
+      });
+
+      assert.ok(result);
+      assert.equal(result.skill, 'deep-interview');
+      assert.equal(result.active, false);
+      assert.equal(result.phase, 'completing');
+      assert.equal(result.input_lock?.active, false);
+      assert.equal(result.input_lock?.released_at, '2026-02-25T00:05:00.000Z');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -375,7 +427,9 @@ describe('keyword detector skill-active-state lifecycle', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
 });
+
 
 describe('isUnderspecifiedForExecution', () => {
   it('flags vague prompt with no files or functions', () => {

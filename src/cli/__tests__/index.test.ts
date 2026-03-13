@@ -7,8 +7,10 @@ import {
   normalizeCodexLaunchArgs,
   buildTmuxShellCommand,
   buildTmuxPaneCommand,
+  buildWindowsPromptCommand,
   buildTmuxSessionName,
   resolveCliInvocation,
+  commandOwnsLocalHelp,
   resolveCodexLaunchPolicy,
   classifyCodexExecFailure,
   resolveSignalExitCode,
@@ -31,7 +33,11 @@ import {
   buildNotifyTempStartupMessages,
 } from '../index.js';
 import { HUD_TMUX_HEIGHT_LINES } from '../../hud/constants.js';
-import { DEFAULT_FRONTIER_MODEL } from '../../config/models.js';
+import { DEFAULT_FRONTIER_MODEL, getTeamLowComplexityModel } from '../../config/models.js';
+
+function expectedLowComplexityModel(codexHomeOverride?: string): string {
+  return getTeamLowComplexityModel(codexHomeOverride);
+}
 
 describe('normalizeCodexLaunchArgs', () => {
   it('maps --madmax to codex bypass flag', () => {
@@ -230,11 +236,11 @@ describe('buildNotifyTempStartupMessages', () => {
 
 describe('resolveWorkerSparkModel', () => {
   it('returns spark model string when --spark is present', () => {
-    assert.equal(resolveWorkerSparkModel(['--spark', '--yolo']), 'gpt-5.3-codex-spark');
+    assert.equal(resolveWorkerSparkModel(['--spark', '--yolo']), expectedLowComplexityModel());
   });
 
   it('returns spark model string when --madmax-spark is present', () => {
-    assert.equal(resolveWorkerSparkModel(['--madmax-spark']), 'gpt-5.3-codex-spark');
+    assert.equal(resolveWorkerSparkModel(['--madmax-spark']), expectedLowComplexityModel());
   });
 
   it('returns undefined when neither spark flag is present', () => {
@@ -262,27 +268,48 @@ describe('resolveWorkerSparkModel', () => {
 describe('resolveTeamWorkerLaunchArgsEnv (spark)', () => {
   it('injects spark model as worker default when no explicit env model', () => {
     assert.equal(
-      resolveTeamWorkerLaunchArgsEnv(undefined, [], true, 'gpt-5.3-codex-spark'),
-      '--model gpt-5.3-codex-spark'
+      resolveTeamWorkerLaunchArgsEnv(undefined, [], true, expectedLowComplexityModel()),
+      `--model ${expectedLowComplexityModel()}`
     );
   });
 
   it('explicit env model overrides spark default', () => {
     assert.equal(
-      resolveTeamWorkerLaunchArgsEnv('--model gpt-5', [], true, 'gpt-5.3-codex-spark'),
+      resolveTeamWorkerLaunchArgsEnv('--model gpt-5', [], true, expectedLowComplexityModel()),
       '--model gpt-5'
     );
   });
 
   it('inherited leader model overrides spark default', () => {
     assert.equal(
-      resolveTeamWorkerLaunchArgsEnv(undefined, ['--model', 'gpt-4.1'], true, 'gpt-5.3-codex-spark'),
+      resolveTeamWorkerLaunchArgsEnv(undefined, ['--model', 'gpt-4.1'], true, expectedLowComplexityModel()),
       '--model gpt-4.1'
     );
   });
 });
 
+describe('commandOwnsLocalHelp', () => {
+  it('returns true for nested commands that render their own help output', () => {
+    for (const command of ['agents-init', 'ask', 'deepinit', 'hooks', 'hud', 'ralph', 'resume', 'session', 'sparkshell', 'team', 'tmux-hook']) {
+      assert.equal(commandOwnsLocalHelp(command), true, `expected ${command} to own local help`);
+    }
+  });
+
+  it('returns false for top-level help-only commands', () => {
+    for (const command of ['help', 'launch', 'version']) {
+      assert.equal(commandOwnsLocalHelp(command), false, `expected ${command} to use top-level help`);
+    }
+  });
+});
+
 describe('resolveCliInvocation', () => {
+  it('resolves explore to explore command', () => {
+    assert.deepEqual(resolveCliInvocation(['explore', '--prompt', 'find', 'auth']), {
+      command: 'explore',
+      launchArgs: [],
+    });
+  });
+
   it('resolves ask to ask command', () => {
     assert.deepEqual(resolveCliInvocation(['ask', 'claude', 'hello']), {
       command: 'ask',
@@ -290,9 +317,44 @@ describe('resolveCliInvocation', () => {
     });
   });
 
+  it('resolves session to session command', () => {
+    assert.deepEqual(resolveCliInvocation(['session', 'search', 'startup evidence']), {
+      command: 'session',
+      launchArgs: [],
+    });
+  });
+
+  it('resolves resume to resume command and forwards trailing args', () => {
+    assert.deepEqual(resolveCliInvocation(['resume', '--last']), {
+      command: 'resume',
+      launchArgs: ['--last'],
+    });
+  });
+
+  it('resolves resume session id and prompt as forwarded args', () => {
+    assert.deepEqual(resolveCliInvocation(['resume', 'session-123', 'continue here']), {
+      command: 'resume',
+      launchArgs: ['session-123', 'continue here'],
+    });
+  });
+
   it('resolves hooks to hooks command', () => {
     assert.deepEqual(resolveCliInvocation(['hooks']), {
       command: 'hooks',
+      launchArgs: [],
+    });
+  });
+
+  it('resolves agents-init to agents-init command', () => {
+    assert.deepEqual(resolveCliInvocation(['agents-init', '.']), {
+      command: 'agents-init',
+      launchArgs: [],
+    });
+  });
+
+  it('resolves deepinit to deepinit alias command', () => {
+    assert.deepEqual(resolveCliInvocation(['deepinit', 'src']), {
+      command: 'deepinit',
       launchArgs: [],
     });
   });
@@ -527,6 +589,21 @@ describe('detached tmux new-session sequencing', () => {
     );
   });
 
+  it('buildDetachedSessionBootstrapSteps starts native Windows detached sessions with powershell', () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      'omx-demo',
+      'C:/project',
+      "'codex' '--dangerously-bypass-approvals-and-sandbox'",
+      "'node' 'omx.js' 'hud' '--watch'",
+      '--model gpt-5',
+      'C:/codex-home',
+      null,
+      true,
+    );
+    assert.equal(steps[0]?.name, 'new-session');
+    assert.equal(steps[0]?.args.at(-1), 'powershell.exe');
+  });
+
   it('buildDetachedSessionFinalizeSteps keeps schedule after split-capture and before attach', () => {
     const steps = buildDetachedSessionFinalizeSteps('omx-demo', '%12', '3', true, false);
     const names = steps.map((step) => step.name);
@@ -553,6 +630,14 @@ describe('detached tmux new-session sequencing', () => {
     assert.match(schedule?.args[2] ?? '', new RegExp(`-y ${HUD_TMUX_HEIGHT_LINES}\\b`));
     assert.match((reconcile?.args ?? []).join(' '), />\/dev\/null 2>&1 \|\| true/);
     assert.match((reconcile?.args ?? []).join(' '), new RegExp(`-y ${HUD_TMUX_HEIGHT_LINES}\\b`));
+  });
+
+  it('buildDetachedSessionFinalizeSteps skips detached resize hooks on native Windows', () => {
+    const steps = buildDetachedSessionFinalizeSteps('omx-demo', '%12', '3', true, false, true);
+    assert.deepEqual(
+      steps.map((step) => step.name),
+      ['set-mouse', 'attach-session'],
+    );
   });
 
   it('buildDetachedSessionRollbackSteps unregisters hooks before killing session', () => {
@@ -618,10 +703,19 @@ describe('buildTmuxPaneCommand', () => {
   });
 });
 
+describe('buildWindowsPromptCommand', () => {
+  it('quotes detached Windows codex commands for PowerShell prompt injection', () => {
+    assert.equal(
+      buildWindowsPromptCommand('codex', ['--dangerously-bypass-approvals-and-sandbox', '-c', 'model_reasoning_effort="high"', "it's"]),
+      "& 'codex' '--dangerously-bypass-approvals-and-sandbox' '-c' 'model_reasoning_effort=\"high\"' 'it''s'",
+    );
+  });
+});
+
 describe('buildTmuxSessionName', () => {
-  it('uses omx-directory-branch-session format', () => {
+  it('uses detached fallback quietly outside git repos', () => {
     const name = buildTmuxSessionName('/tmp/My Repo', 'omx-1770992424158-abc123');
-    assert.match(name, /^omx-my-repo-[a-z0-9-]+-1770992424158-abc123$/);
+    assert.equal(name, 'omx-my-repo-detached-1770992424158-abc123');
   });
 
   it('sanitizes invalid characters', () => {

@@ -35,6 +35,10 @@ Complex tasks often fail silently: partial implementations get declared "done", 
 - Always pass the `model` parameter explicitly when delegating to agents
 - Read `docs/shared/agent-tiers.md` before first delegation to select correct agent tiers
 - Deliver the full implementation: no scope reduction, no partial completion, no deleting tests to make them pass
+- Default to concise, evidence-dense progress and completion reporting unless the user or risk level requires more detail
+- Treat newer user task updates as local overrides for the active workflow branch while preserving earlier non-conflicting constraints
+- If correctness depends on additional inspection, retrieval, execution, or verification, keep using the relevant tools until the execution loop is grounded
+- Continue through clear, low-risk, reversible next steps automatically; ask only when the next step is materially branching, destructive, or preference-dependent
 </Execution_Policy>
 
 <Steps>
@@ -48,7 +52,7 @@ Complex tasks often fail silently: partial implementations get declared "done", 
      - unknowns/open questions
      - likely codebase touchpoints
    - If an existing relevant snapshot is available, reuse it and record the path in Ralph state.
-   - If request ambiguity is high, run `explore` first for brownfield facts, then run `$deep-interview --quick <task>` to close critical gaps.
+   - If request ambiguity is high, gather brownfield facts first. When session guidance enables `USE_OMX_EXPLORE_CMD`, prefer `omx explore` for simple read-only repository lookups with narrow, concrete prompts; otherwise use the richer normal explore path. Then run `$deep-interview --quick <task>` to close critical gaps.
    - Do not begin Ralph execution work (delegation, implementation, or verification loops) until snapshot grounding exists. If forced to proceed quickly, note explicit risk tradeoffs.
 1. **Review progress**: Check TODO list and any prior iteration state
 2. **Continue from where you left off**: Pick up incomplete tasks
@@ -56,6 +60,7 @@ Complex tasks often fail silently: partial implementations get declared "done", 
    - Simple lookups: LOW tier -- "What does this function return?"
    - Standard work: STANDARD tier -- "Add error handling to this module"
    - Complex analysis: THOROUGH tier -- "Debug this race condition"
+   - When Ralph is entered as a ralplan follow-up, start from the approved **available-agent-types roster** and make the delegation plan explicit: implementation lane, evidence/regression lane, and final sign-off lane using only known agent types
 4. **Run long operations in background**: Builds, installs, test suites use `run_in_background: true`
 5. **Visual task gate (when screenshot/reference images are present)**:
    - Run `$visual-verdict` **before every next edit**.
@@ -100,6 +105,15 @@ Use the `omx_state` MCP server tools (`state_write`, `state_read`, `state_clear`
   `state_write({mode: "ralph", active: false, current_phase: "complete", completed_at: "<now>"})`
 - **On cancellation/cleanup**:
   run `$cancel` (which should call `state_clear(mode="ralph")`)
+
+
+## Scenario Examples
+
+**Good:** The user says `continue` after the workflow already has a clear next step. Continue the current branch of work instead of restarting or re-asking the same question.
+
+**Good:** The user changes only the output shape or downstream delivery step (for example `make a PR`). Preserve earlier non-conflicting workflow constraints and apply the update locally.
+
+**Bad:** The user says `continue`, and the workflow restarts discovery or stops before the missing verification/evidence is gathered.
 
 <Examples>
 <Good>

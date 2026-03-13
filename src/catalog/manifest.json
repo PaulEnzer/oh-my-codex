@@ -86,6 +86,11 @@
       "canonical": "build-fixer"
     },
     {
+      "name": "ai-slop-cleaner",
+      "category": "shortcut",
+      "status": "active"
+    },
+    {
       "name": "code-review",
       "category": "shortcut",
       "status": "active",
@@ -264,6 +269,11 @@
       "name": "executor",
       "category": "build",
       "status": "active"
+    },
+    {
+      "name": "team-executor",
+      "category": "build",
+      "status": "internal"
     },
     {
       "name": "verifier",
