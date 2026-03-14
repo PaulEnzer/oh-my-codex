@@ -663,9 +663,9 @@ fn is_reply_listener_process(pid: u32) -> bool {
     #[cfg(target_os = "linux")]
     {
         let path = format!("/proc/{pid}/cmdline");
-        return read_to_string(path)
+        read_to_string(path)
             .map(|cmdline| cmdline.contains("reply-listener"))
-            .unwrap_or(false);
+            .unwrap_or(false)
     }
 
     #[cfg(all(unix, not(target_os = "linux")))]
@@ -695,7 +695,7 @@ fn terminate_process(pid: u32) -> Result<(), String> {
         if status.success() {
             return Ok(());
         }
-        return Err(format!("kill exited with {status}"));
+        Err(format!("kill exited with {status}"))
     }
     #[cfg(windows)]
     {
@@ -1148,8 +1148,8 @@ mod tests {
         let parsed = parse_reply_listener_config(
             r#"{"discordEnabled":true,"telegramEnabled":false,"pollIntervalMs":1234,"discordBotToken":"abc","discordChannelId":"chan","rateLimitPerMinute":7,"maxMessageLength":123}"#,
         );
-        assert_eq!(parsed.discord_enabled, true);
-        assert_eq!(parsed.telegram_enabled, false);
+        assert!(parsed.discord_enabled);
+        assert!(!parsed.telegram_enabled);
         assert_eq!(parsed.poll_interval_ms, 1234);
         assert_eq!(parsed.discord_bot_token.as_deref(), Some("abc"));
         assert_eq!(parsed.discord_channel_id.as_deref(), Some("chan"));

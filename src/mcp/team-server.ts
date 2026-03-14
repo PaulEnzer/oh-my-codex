@@ -11,8 +11,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { readFile } from 'fs/promises';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
+import { join } from 'path';
 import { spawn } from 'child_process';
 import { homedir } from 'os';
 import { z } from 'zod';

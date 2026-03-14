@@ -5,6 +5,7 @@ use std::time::Duration;
 const TMUX_TEXT_SETTLE_MS: u64 = 120;
 const TMUX_SUBMIT_REPEAT_DELAY_MS: u64 = 100;
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct PaneAnalysis {
     pub has_codex: bool,
@@ -113,6 +114,7 @@ pub fn capture_pane(pane_id: &str, tail_lines: usize) -> Result<String, String> 
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+#[cfg(test)]
 pub fn analyze_pane_content(content: &str) -> PaneAnalysis {
     let lower = content.to_ascii_lowercase();
 

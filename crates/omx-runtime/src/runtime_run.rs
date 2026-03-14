@@ -2,7 +2,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs::{create_dir_all, read_dir, read_to_string, remove_dir_all, write};
 use std::io::{self, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -257,7 +257,7 @@ fn initialize_team_state(
     start_task: &str,
     input: &RuntimeRunInput,
     worker_clis: &[WorkerCli],
-    team_state_root: &PathBuf,
+    team_state_root: &Path,
     created_at: &str,
 ) -> Result<(), String> {
     let team_root = team_state_root.join("team").join(team_name);
@@ -383,7 +383,7 @@ fn finalize_team_state(
     start_task: &str,
     input: &RuntimeRunInput,
     worker_clis: &[WorkerCli],
-    team_state_root: &PathBuf,
+    team_state_root: &Path,
     created_at: &str,
     session: &TeamSessionStart,
 ) -> Result<(), String> {
@@ -555,7 +555,7 @@ fn create_team_session(
     team_name: &str,
     input: &RuntimeRunInput,
     worker_clis: &[WorkerCli],
-    team_state_root: &PathBuf,
+    team_state_root: &Path,
 ) -> Result<TeamSessionStart, String> {
     let tmux_pane_target = env::var("TMUX_PANE").ok();
     let mut args = vec!["display-message".to_string(), "-p".to_string()];
@@ -670,7 +670,7 @@ fn build_worker_start_command(
     worker_index: usize,
     worker_cli: WorkerCli,
     input: &RuntimeRunInput,
-    team_state_root: &PathBuf,
+    team_state_root: &Path,
 ) -> String {
     let shell = env::var("SHELL")
         .ok()
@@ -696,7 +696,7 @@ fn build_worker_start_command(
         cli_command = cli_command,
         launch_args = launch_args,
     );
-    let env_parts = vec![
+    let env_parts = [
         format!(
             "OMX_TEAM_WORKER={}",
             shell_quote_single(&format!("{team_name}/{worker_name}"))
@@ -853,8 +853,8 @@ fn shutdown_and_emit_result(
     }
 
     let task_results = collect_task_results(input);
-    print!(
-        "{{\"status\":{},\"teamName\":{},\"taskResults\":{},\"duration\":{},\"workerCount\":{}}}\n",
+    println!(
+        "{{\"status\":{},\"teamName\":{},\"taskResults\":{},\"duration\":{},\"workerCount\":{}}}",
         json_string(status),
         json_string(&input.team_name),
         json_task_results(&task_results),
@@ -978,11 +978,12 @@ fn write_phase_state(
     team_name: &str,
     cwd: &str,
     phase: &str,
-    no_failed_tasks: bool,
+    _no_failed_tasks: bool,
 ) -> Result<(), String> {
     let phase_path = team_dir(team_name, cwd).join("phase.json");
     let current_fix_attempt = if phase == "team-fix" { 1 } else { 0 };
-    let max_fix_attempts = if no_failed_tasks { 3 } else { 3 };
+    let max_fix_attempts = 3;
+
     write(
         phase_path,
         format!(
@@ -1246,21 +1247,6 @@ fn json_string_array(values: &[String]) -> String {
         values
             .iter()
             .map(|value| json_string(value))
-            .collect::<Vec<_>>()
-            .join(",")
-    )
-}
-
-fn json_task_array(values: &[RuntimeTaskInput]) -> String {
-    format!(
-        "[{}]",
-        values
-            .iter()
-            .map(|value| format!(
-                "{{\"subject\":{},\"description\":{}}}",
-                json_string(&value.subject),
-                json_string(&value.description),
-            ))
             .collect::<Vec<_>>()
             .join(",")
     )
@@ -1536,11 +1522,11 @@ mod tests {
     #[test]
     fn detects_dead_worker_failure_from_live_pane_count() {
         let stale_snapshot_behavior = detect_dead_worker_failure(2, 3, true, "team-exec");
-        assert_eq!(stale_snapshot_behavior.0, false);
+        assert!(!stale_snapshot_behavior.0);
 
         let live_behavior = detect_dead_worker_failure(2, 2, true, "team-exec");
-        assert_eq!(live_behavior.0, true);
-        assert_eq!(live_behavior.1, false);
+        assert!(live_behavior.0);
+        assert!(!live_behavior.1);
     }
 
     #[test]
