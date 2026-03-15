@@ -499,9 +499,14 @@ fn render_state_json(state: &NativeReplyListenerState) -> String {
         .as_ref()
         .map(|value| format!("\"{}\"", escape_json(value)))
         .unwrap_or_else(|| "null".to_string());
+    let last_error = state
+        .last_error
+        .as_ref()
+        .map(|value| format!("\"{}\"", escape_json(value)))
+        .unwrap_or_else(|| "null".to_string());
 
     format!(
-        "{{\"isRunning\":{},\"pid\":{},\"startedAt\":\"{}\",\"lastPollAt\":\"{}\",\"telegramLastUpdateId\":{},\"discordLastMessageId\":{},\"messagesInjected\":{},\"errors\":{}}}\n",
+        "{{\"isRunning\":{},\"pid\":{},\"startedAt\":\"{}\",\"lastPollAt\":\"{}\",\"telegramLastUpdateId\":{},\"discordLastMessageId\":{},\"messagesInjected\":{},\"errors\":{},\"lastError\":{}}}\n",
         if state.is_running { "true" } else { "false" },
         pid,
         escape_json(&state.started_at),
@@ -509,7 +514,8 @@ fn render_state_json(state: &NativeReplyListenerState) -> String {
         telegram,
         discord,
         state.messages_injected,
-        state.errors
+        state.errors,
+        last_error
     )
 }
 
@@ -998,18 +1004,22 @@ fn bump_injection_count(state_dir: &str) -> Result<(), String> {
             digits.parse::<u64>().ok()
         })
         .unwrap_or(0);
+    let last_error = extract_string(&existing, "lastError")
+        .map(|value| format!("\"{}\"", escape_json(&value)))
+        .unwrap_or_else(|| "null".to_string());
     let now = current_timestamp();
     let discord_last_message_field = discord_last_message_id
         .map(|value| format!("\"{}\"", escape_json(&value)))
         .unwrap_or_else(|| "null".to_string());
     let content = format!(
-        "{{\"isRunning\":true,\"pid\":{},\"startedAt\":\"{}\",\"lastPollAt\":\"{}\",\"telegramLastUpdateId\":null,\"discordLastMessageId\":{},\"messagesInjected\":{},\"errors\":{}}}\n",
+        "{{\"isRunning\":true,\"pid\":{},\"startedAt\":\"{}\",\"lastPollAt\":\"{}\",\"telegramLastUpdateId\":null,\"discordLastMessageId\":{},\"messagesInjected\":{},\"errors\":{},\"lastError\":{}}}\n",
         std::process::id(),
         started_at,
         now,
         discord_last_message_field,
         next_count,
-        errors
+        errors,
+        last_error
     );
     write(state_path, content)
         .map_err(|err| format!("failed updating reply-listener state file: {err}"))
