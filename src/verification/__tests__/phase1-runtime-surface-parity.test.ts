@@ -57,7 +57,6 @@ describe('phase-1 runtime surface parity contracts', () => {
   });
 
 
-
   it('keeps the HUD lane truthfully scoped to native launch ownership rather than full behavioral parity', () => {
     const hudIndexSource = readSource('src', 'hud', 'index.ts');
     const hudStateSource = readSource('src', 'hud', 'state.ts');
@@ -79,7 +78,7 @@ describe('phase-1 runtime surface parity contracts', () => {
     assert.match(cutoverDoc, /remaining risk is now parity, not a live Node startup dependency/i);
     assert.match(parityDoc, /## Lane 3 — HUD behavior parity/);
     assert.match(parityDoc, /HUD launch ownership is native on the guarded path, but behavior is still parity-incomplete/i);
-    assert.match(parityDoc, /Unsafe statements/[\s\S]*HUD parity is complete/);
+    assert.match(parityDoc, /Unsafe statements[\s\S]*HUD parity is complete/);
   });
 
   it('keeps the watcher/notification lane mapped onto the exact TS watcher SSOT touchpoints and native operator subcommands', () => {

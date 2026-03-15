@@ -142,7 +142,7 @@ The boundary map is clear: **CLI/MCP entry semantics are still TS-defined**, whi
 
 ## Verification snapshot
 - `npm run build -- --pretty false` → PASS.
-- `node --test dist/verification/__tests__/phase1-runtime-surface-parity.test.js` → PASS (`4 passed; 0 failed`).
+- `node --test dist/verification/__tests__/phase1-runtime-surface-parity.test.js` → PASS (`5 passed; 0 failed`).
 - `node --test dist/verification/__tests__/ts-rust-parity-lanes-doc.test.js` → PASS (`1 passed; 0 failed`).
 - Code-boundary review confirms native command surfaces in `crates/omx-runtime/src/main.rs` and MCP spawn via `src/mcp/team-server.ts:327-333`.
 
