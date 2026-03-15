@@ -98,7 +98,7 @@ Safe claim: guarded HUD launch is native. Unsafe claim: HUD parity is complete.
   - registry lookup,
   - pane injection/log/state updates,
   - `status` / `stop` commands.
-- `cargo test -p omx-runtime` currently passes `49` tests, including reply-listener and watcher tests.
+- `cargo test -p omx-runtime` currently passes `72` tests, including reply-listener, watcher, runtime-run, and topology tests.
 
 ### Verified gap summary
 - Reply-listener parity is the strongest native lane, but TS still owns outer config/state normalization and launch orchestration.

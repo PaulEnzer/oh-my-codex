@@ -33,9 +33,12 @@ describe('TS→Rust parity lanes doc contract', () => {
     assert.match(doc, /crates\/omx-runtime\/src\/hud\.rs/);
     assert.match(doc, /crates\/omx-runtime\/src\/watchers\.rs/);
     assert.match(doc, /crates\/omx-runtime\/src\/reply_listener\.rs/);
+    assert.match(doc, /no full worktree provisioning \/ detached-trigger parity/);
+    assert.match(doc, /no worker instruction-file \/ model-instruction parity/);
     assert.match(doc, /npm run build -- --pretty false` → PASS/i);
     assert.match(doc, /node --test dist\/verification\/__tests__\/phase1-runtime-surface-parity\.test\.js` → PASS/i);
     assert.match(doc, /node --test dist\/verification\/__tests__\/ts-rust-parity-lanes-doc\.test\.js` → PASS/i);
+    assert.match(doc, /cargo test -p omx-runtime` currently passes `72` tests/i);
 
     assert.match(doc, /Safe statements/);
     assert.match(doc, /Unsafe statements/);
