@@ -324,6 +324,10 @@ omx autoresearch missions/demo
 
 `omx autoresearch` now runs as a thin supervisor around one Codex experiment session at a time. A fresh launch creates a run-tagged `autoresearch/<slug>/<run-tag>` worktree lane, seeds the baseline evaluator row, writes authoritative per-run artifacts under `.omx/logs/autoresearch/<run-id>/`, and expects the session to hand back a repo-root `candidate.json` artifact. Each iteration's bootstrap instructions include the current baseline/last-kept state plus a bounded recent ledger summary, and `status=candidate` artifacts must point at the current worktree `HEAD` and last-kept base commit. After each session exit, OMX evaluates the candidate, records keep/discard/reset state, hard-resets discarded or ambiguous experiments back to the last kept commit, and relaunches the next iteration unless the run aborts. Use `omx autoresearch --resume <run-id>` to continue an existing run from its manifest/worktree.
 
+Autoresearch showcase:
+
+For the canonical autoresearch showcase — including completed research-style demos, missions, evaluators, and the lightweight runner script — see [`playground/README.md`](playground/README.md).
+
 `omx explore` is the default OMX surface for simple read-only exploration. It stays intentionally read-only and shell-only, and qualifying shell-native read-only tasks may be routed through `omx sparkshell` as a backend when that is the cheaper/more direct fit. The routing flag only adds advisory steering in generated session instructions; ambiguous or implementation-heavy requests stay on the normal Codex path, and OMX falls back normally if the explore harness is unavailable. The harness constrains Codex through a temporary allowlisted shell/bin layer so only approved repository-inspection command families are available during the offloaded run.
 
 - Current shell allowlist: `rg`, `grep`, `ls`, `find`, `wc`, `cat`, `head`, `tail`, `pwd`, `printf`

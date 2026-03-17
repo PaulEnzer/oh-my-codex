@@ -393,6 +393,25 @@ Expected:
 
 ---
 
+## Demo 9: Autoresearch Showcase Hub
+
+OMX now includes a lightweight research-showcase hub for reproducible autoresearch demos under `playground/README.md`.
+
+Quick start:
+
+```bash
+# list bundled showcase missions
+./scripts/run-autoresearch-showcase.sh --list
+
+# run one showcase
+./scripts/run-autoresearch-showcase.sh bayesopt
+
+# run several showcases back-to-back
+./scripts/run-autoresearch-showcase.sh omx-self ml-tabular bayesopt
+```
+
+See `playground/README.md` for the mission index, completed-result summaries, and repository-hygiene guidance.
+
 ## Demo Script Reference
 
 ### `scripts/demo-team-e2e.sh`

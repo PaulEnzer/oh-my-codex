@@ -200,7 +200,7 @@ describe('omx autoresearch', () => {
     }
   });
 
-  it('launches codex exec for autoresearch turns', async () => {
+  it('launches codex exec for autoresearch turns without shelling out to cat', async () => {
     const repo = await initRepo();
     const fakeBin = await mkdtemp(join(tmpdir(), 'omx-autoresearch-fake-bin-'));
     try {
@@ -217,25 +217,28 @@ describe('omx autoresearch', () => {
       execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' });
       execFileSync('git', ['commit', '-m', 'add autoresearch mission'], { cwd: repo, stdio: 'ignore' });
 
+      const fakeCatPath = join(fakeBin, 'cat');
+      await writeFile(
+        fakeCatPath,
+        `#!/bin/sh
+printf 'unexpected cat invocation\\n' >&2
+exit 97
+`,
+        'utf-8',
+      );
+      execFileSync('chmod', ['+x', fakeCatPath], { stdio: 'ignore' });
+
       const fakeCodexPath = join(fakeBin, 'codex');
       await writeFile(
         fakeCodexPath,
         `#!/bin/sh
 printf 'fake-codex:%s\\n' "$*" >&2
-cat >/dev/null
-candidate_file=$(find /tmp -path '*/.omx/logs/autoresearch/*/candidate.json' | head -n 1)
+while IFS= read -r _; do
+  :
+done
 candidate_file=$(find "$OMX_TEST_REPO_ROOT/.omx/logs/autoresearch" -name candidate.json | head -n 1)
 head_commit=$(git rev-parse HEAD)
-cat >"$candidate_file" <<EOF
-{
-  "status": "abort",
-  "candidate_commit": null,
-  "base_commit": "$head_commit",
-  "description": "stop after first exec",
-  "notes": ["fake codex exec"],
-  "created_at": "2026-03-15T00:00:00.000Z"
-}
-EOF
+printf '{\\n  "status": "abort",\\n  "candidate_commit": null,\\n  "base_commit": "%s",\\n  "description": "stop after first exec",\\n  "notes": ["fake codex exec"],\\n  "created_at": "2026-03-15T00:00:00.000Z"\\n}\\n' "$head_commit" >"$candidate_file"
 `,
         'utf-8',
       );
