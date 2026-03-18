@@ -45,7 +45,7 @@ describe('agents model table', () => {
 
     assert.deepEqual(context, {
       frontierModel: 'frontier-config',
-      miniModel: 'gpt-5-mini',
+      miniModel: 'gpt-5.4-mini',
       sparkModel: 'spark-env',
       subagentDefaultModel: 'frontier-config',
     });

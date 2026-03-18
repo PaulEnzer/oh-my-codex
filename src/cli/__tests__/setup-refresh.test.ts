@@ -259,7 +259,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       );
 
       assert.match(architectToml, /^model = "gpt-5\.4"$/m);
-      assert.match(executorToml, /^model = "gpt-5-mini"$/m);
+      assert.match(executorToml, /^model = "gpt-5\.4-mini"$/m);
       assert.match(exploreToml, /^model = "gpt-5\.3-codex-spark"$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });

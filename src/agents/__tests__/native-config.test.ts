@@ -31,7 +31,7 @@ describe("agents/native-config", () => {
     });
 
     assert.match(toml, /# oh-my-codex agent: executor/);
-    assert.match(toml, /model = "gpt-5-mini"/);
+    assert.match(toml, /model = "gpt-5\.4-mini"/);
     assert.match(toml, /model_reasoning_effort = "medium"/);
     assert.ok(!toml.includes("title: demo"));
     assert.ok(toml.includes("Instruction line"));
@@ -66,7 +66,7 @@ describe("agents/native-config", () => {
         join(outDir, "executor.toml"),
         "utf8",
       );
-      assert.match(executorToml, /model = "gpt-5-mini"/);
+      assert.match(executorToml, /model = "gpt-5\.4-mini"/);
       assert.match(executorToml, /model_reasoning_effort = "medium"/);
 
       const skipped = await installNativeAgentConfigs(root, {
