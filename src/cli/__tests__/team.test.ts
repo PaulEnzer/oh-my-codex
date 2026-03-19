@@ -1265,7 +1265,7 @@ describe('teamCommand status', () => {
     const originalLog = console.log;
     try {
       process.chdir(wd);
-      const config = await initTeamState('workspace-mode-team', 'inspect workspace mode', 'executor', 1, wd);
+      const config = await withoutTeamTestWorkerEnv(() => initTeamState('workspace-mode-team', 'inspect workspace mode', 'executor', 1, wd));
       config.workspace_mode = 'worktree';
       const teamDir = join(wd, '.omx', 'state', 'team', 'workspace-mode-team');
       const configPath = join(teamDir, 'config.json');
@@ -1277,7 +1277,7 @@ describe('teamCommand status', () => {
       await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
       console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
 
-      await teamCommand(['status', 'workspace-mode-team']);
+      await withoutTeamTestWorkerEnv(() => teamCommand(['status', 'workspace-mode-team']));
 
       assert.ok(logs.some((line) => /workspace_mode: worktree/.test(line)));
     } finally {
@@ -1294,7 +1294,7 @@ describe('teamCommand status', () => {
     const originalLog = console.log;
     try {
       process.chdir(wd);
-      const config = await initTeamState('workspace-mode-json-team', 'inspect workspace mode', 'executor', 1, wd);
+      const config = await withoutTeamTestWorkerEnv(() => initTeamState('workspace-mode-json-team', 'inspect workspace mode', 'executor', 1, wd));
       config.workspace_mode = 'worktree';
       const teamDir = join(wd, '.omx', 'state', 'team', 'workspace-mode-json-team');
       const configPath = join(teamDir, 'config.json');
@@ -1306,7 +1306,7 @@ describe('teamCommand status', () => {
       await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
       console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
 
-      await teamCommand(['status', 'workspace-mode-json-team', '--json']);
+      await withoutTeamTestWorkerEnv(() => teamCommand(['status', 'workspace-mode-json-team', '--json']));
 
       const payload = JSON.parse(logs[0] ?? '{}') as { workspace_mode?: string | null; status?: string };
       assert.equal(payload.status, 'ok');

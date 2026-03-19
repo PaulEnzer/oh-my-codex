@@ -18,6 +18,40 @@ async function withTempWorkingDir(run: (cwd: string) => Promise<void>): Promise<
   }
 }
 
+function withClearedTeamEnv<T>(fn: () => T): T {
+  const previousTeamWorker = process.env.OMX_TEAM_WORKER;
+  const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+  const previousLeaderCwd = process.env.OMX_TEAM_LEADER_CWD;
+  const previousInstructions = process.env.OMX_MODEL_INSTRUCTIONS_FILE;
+  delete process.env.OMX_TEAM_WORKER;
+  delete process.env.OMX_TEAM_STATE_ROOT;
+  delete process.env.OMX_TEAM_LEADER_CWD;
+  delete process.env.OMX_MODEL_INSTRUCTIONS_FILE;
+
+  let restoreImmediately = true;
+  const restore = () => {
+    if (typeof previousTeamWorker === 'string') process.env.OMX_TEAM_WORKER = previousTeamWorker;
+    else delete process.env.OMX_TEAM_WORKER;
+    if (typeof previousTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+    else delete process.env.OMX_TEAM_STATE_ROOT;
+    if (typeof previousLeaderCwd === 'string') process.env.OMX_TEAM_LEADER_CWD = previousLeaderCwd;
+    else delete process.env.OMX_TEAM_LEADER_CWD;
+    if (typeof previousInstructions === 'string') process.env.OMX_MODEL_INSTRUCTIONS_FILE = previousInstructions;
+    else delete process.env.OMX_MODEL_INSTRUCTIONS_FILE;
+  };
+
+  try {
+    const result = fn();
+    if (result instanceof Promise) {
+      restoreImmediately = false;
+      return result.finally(restore) as T;
+    }
+    return result;
+  } finally {
+    if (restoreImmediately) restore();
+  }
+}
+
 function runNotifyHook(cwd: string, extraPayload: Record<string, unknown> = {}): void {
   const payload = {
     cwd,
@@ -34,6 +68,9 @@ function runNotifyHook(cwd: string, extraPayload: Record<string, unknown> = {}):
     env: {
       ...process.env,
       OMX_TEAM_WORKER: '',
+      OMX_TEAM_STATE_ROOT: '',
+      OMX_TEAM_LEADER_CWD: '',
+      OMX_MODEL_INSTRUCTIONS_FILE: '',
       TMUX: '',
       TMUX_PANE: '',
     },
@@ -81,7 +118,7 @@ process.on('SIGTERM', () => process.exit(0));
 
         const teamTask = 'real launch linked notify sync';
         const teamName = parseTeamStartArgs(['ralph', '1:executor', teamTask]).parsed.teamName;
-        await teamCommand(['ralph', '1:executor', teamTask]);
+        await withClearedTeamEnv(() => teamCommand(['ralph', '1:executor', teamTask]));
 
         const stateDir = join(cwd, '.omx', 'state');
         const teamStatePath = join(stateDir, 'team-state.json');

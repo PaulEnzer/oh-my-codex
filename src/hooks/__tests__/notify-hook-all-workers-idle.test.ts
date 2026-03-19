@@ -63,6 +63,9 @@ function runNotifyHookAsWorker(
       ...process.env,
       PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
       OMX_TEAM_WORKER: workerEnv,
+      OMX_TEAM_STATE_ROOT: join(cwd, '.omx', 'state'),
+      OMX_TEAM_LEADER_CWD: '',
+      OMX_MODEL_INSTRUCTIONS_FILE: '',
       OMX_TEAM_WORKER_IDLE_NOTIFY: 'false',
       OMX_TEAM_ALL_IDLE_COOLDOWN_MS: '500', // short cooldown for tests
       TMUX: '',
@@ -658,6 +661,9 @@ exit 0
           ...process.env,
           PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
           OMX_TEAM_WORKER: '', // empty = not a worker
+          OMX_TEAM_STATE_ROOT: '',
+          OMX_TEAM_LEADER_CWD: '',
+          OMX_MODEL_INSTRUCTIONS_FILE: '',
           TMUX: '',
           TMUX_PANE: '',
         },

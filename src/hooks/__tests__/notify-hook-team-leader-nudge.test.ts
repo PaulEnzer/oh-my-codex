@@ -88,6 +88,9 @@ function runNotifyHook(
       OMX_TEAM_LEADER_NUDGE_MS: '10000',
       OMX_TEAM_LEADER_STALE_MS: '10000',
       OMX_TEAM_WORKER: '',
+      OMX_TEAM_STATE_ROOT: '',
+      OMX_TEAM_LEADER_CWD: '',
+      OMX_MODEL_INSTRUCTIONS_FILE: '',
       TMUX: '',
       TMUX_PANE: '',
       ...extraEnv,
@@ -172,7 +175,8 @@ describe('notify-hook leader-side authority handoff', () => {
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
       const request = await readDispatchRequest('handoff-dispatch', queued.request.request_id, cwd);
-      assert.equal(request?.status, 'failed');
+      assert.equal(request?.status, 'pending');
+      assert.equal(request?.last_reason, undefined);
     });
   });
 });
