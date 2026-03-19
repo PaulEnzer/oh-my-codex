@@ -36,8 +36,7 @@ import {
   pruneRecentTurns,
   readdir,
 } from './notify-hook/state-io.js';
-import { isLeaderStale, resolveLeaderStalenessThresholdMs, maybeNudgeTeamLeader } from './notify-hook/team-leader-nudge.js';
-import { drainPendingTeamDispatch } from './notify-hook/team-dispatch.js';
+import { isLeaderStale, resolveLeaderStalenessThresholdMs } from './notify-hook/team-leader-nudge.js';
 import { syncLinkedRalphOnTeamTerminal } from './notify-hook/linked-sync.js';
 import { handleTmuxInjection } from './notify-hook/tmux-injection.js';
 import { maybeAutoNudge, resolveNudgePaneTarget } from './notify-hook/auto-nudge.js';
@@ -349,24 +348,6 @@ async function main() {
   if (!isTeamWorker) {
     try {
       await handleTmuxInjection({ payload, cwd, stateDir, logsDir });
-    } catch {
-      // Non-critical
-    }
-  }
-
-  // 5.5. Opportunistic team dispatch drain (leader session only).
-  if (!isTeamWorker) {
-    try {
-      await drainPendingTeamDispatch({ cwd, stateDir, logsDir, maxPerTick: 5 } as any);
-    } catch {
-      // Non-critical
-    }
-  }
-
-  // 6. Team leader nudge (lead session only): remind the leader to check teammate/mailbox state.
-  if (!isTeamWorker) {
-    try {
-      await maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputedLeaderStale });
     } catch {
       // Non-critical
     }
