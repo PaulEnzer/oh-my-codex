@@ -179,14 +179,25 @@ describe('resolveTeamPlayPaneSpec', () => {
     await mkdir(leader, { recursive: true });
     await mkdir(dino, { recursive: true });
     await writeFile(join(dino, 'Cargo.toml'), '[package]\nname=\"dino-game\"\n');
+    const fakeDistCli = join(leader, 'dist', 'cli');
+    const fakeDistScripts = join(leader, 'dist', 'scripts');
+    await mkdir(fakeDistCli, { recursive: true });
+    await mkdir(fakeDistScripts, { recursive: true });
+    await writeFile(join(fakeDistCli, 'omx.js'), '');
+    await writeFile(join(fakeDistScripts, 'team-play-pane-dock.js'), '');
+    const previousArgv1 = process.argv[1];
+    process.argv[1] = join(fakeDistCli, 'omx.js');
 
     try {
-      assert.deepEqual(resolveTeamPlayPaneSpec(leader, {} as NodeJS.ProcessEnv), {
-        cmd: 'cargo run',
-        cwd: dino,
-        heightLines: 18,
-      });
+      const spec = resolveTeamPlayPaneSpec(leader, {} as NodeJS.ProcessEnv);
+      assert.ok(spec);
+      assert.equal(spec?.cwd, dino);
+      assert.equal(spec?.heightLines, 18);
+      assert.match(spec?.cmd ?? '', /team-play-pane-dock\.js/);
+      assert.match(spec?.cmd ?? '', /--game-cwd/);
+      assert.match(spec?.cmd ?? '', /Rust Dino/);
     } finally {
+      process.argv[1] = previousArgv1;
       await rm(root, { recursive: true, force: true });
     }
   });

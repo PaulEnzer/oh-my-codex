@@ -1258,7 +1258,7 @@ exit 0
           const escapedDinoCwd = dinoCwd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
           assert.match(
             tmuxLog,
-            new RegExp(`split-window -v -l 18 -t %1 -d -P -F #\\{pane_id\\} -c ${escapedDinoCwd} cargo run`),
+            new RegExp(`split-window -v -l 18 -t %1 -d -P -F #\\{pane_id\\} -c ${escapedDinoCwd} (node .*team-play-pane-dock\\.js --game-cwd ${escapedDinoCwd}|cargo run)`),
           );
           assert.doesNotMatch(tmuxLog, /hud --watch.*leader:0/);
           assert.doesNotMatch(tmuxLog, /set-hook -t leader:0 client-resized/);

@@ -1,7 +1,7 @@
 import { spawnSync, execFile } from 'child_process';
 import { promisify } from 'util';
 import { existsSync, readFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
 import {
   CODEX_BYPASS_FLAG,
   MADMAX_FLAG,
@@ -50,6 +50,7 @@ const OMX_TEAM_AUTO_INTERRUPT_RETRY_ENV = 'OMX_TEAM_AUTO_INTERRUPT_RETRY';
 const OMX_TEAM_PLAY_PANE_CMD_ENV = 'OMX_TEAM_PLAY_PANE_CMD';
 const OMX_TEAM_PLAY_PANE_CWD_ENV = 'OMX_TEAM_PLAY_PANE_CWD';
 const OMX_TEAM_PLAY_PANE_HEIGHT_LINES_ENV = 'OMX_TEAM_PLAY_PANE_HEIGHT_LINES';
+const OMX_TEAM_PLAY_TARGET_WINDOW_ID_ENV = 'OMX_TEAM_PLAY_TARGET_WINDOW_ID';
 const CLAUDE_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
 const GEMINI_PROMPT_INTERACTIVE_FLAG = '-i';
 const GEMINI_APPROVAL_MODE_FLAG = '--approval-mode';
@@ -313,6 +314,14 @@ function buildBestEffortShellCommand(command: string): string {
   return `${command} >/dev/null 2>&1 || true`;
 }
 
+function resolveActiveXWindowId(env: NodeJS.ProcessEnv = process.env): string | null {
+  if (!env.DISPLAY) return null;
+  const result = spawnSync('xprop', ['-root', '_NET_ACTIVE_WINDOW'], { encoding: 'utf-8' });
+  if (result.error || result.status !== 0) return null;
+  const match = (result.stdout || '').match(/window id # (0x[0-9a-f]+)/i);
+  return match?.[1] ?? null;
+}
+
 function resolvePlayPaneHeightLines(raw: string | undefined): number {
   const parsed = Number.parseInt(String(raw ?? ''), 10);
   if (!Number.isFinite(parsed)) return DEFAULT_TEAM_PLAY_PANE_HEIGHT_LINES;
@@ -330,8 +339,16 @@ export function resolveTeamPlayPaneSpec(
   if (cmd === '') {
     const siblingDinoCwd = resolve(leaderCwd, '..', 'dino-game');
     if (!existsSync(join(siblingDinoCwd, 'Cargo.toml'))) return null;
+    const omxEntry = process.argv[1];
+    const playPaneDockScript = omxEntry
+      ? resolve(dirname(omxEntry), '..', 'scripts', 'team-play-pane-dock.js')
+      : '';
+    const targetWindowId = resolveActiveXWindowId(env);
+    const dockedCmd = playPaneDockScript && existsSync(playPaneDockScript)
+      ? `${targetWindowId ? `${OMX_TEAM_PLAY_TARGET_WINDOW_ID_ENV}=${shellQuoteSingle(targetWindowId)} ` : ''}node ${shellQuoteSingle(translatePathForMsys(playPaneDockScript))} --game-cwd ${shellQuoteSingle(translatePathForMsys(siblingDinoCwd))} --logical-width 1280 --logical-height 360 --window-title ${shellQuoteSingle('Rust Dino')}`
+      : 'cargo run';
     return {
-      cmd: 'cargo run',
+      cmd: dockedCmd,
       cwd: siblingDinoCwd,
       heightLines: resolvePlayPaneHeightLines(env[OMX_TEAM_PLAY_PANE_HEIGHT_LINES_ENV]),
     };
