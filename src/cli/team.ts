@@ -2470,6 +2470,9 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
   }
   await renderStartSummary(runtime, staffingPlan);
   if (parsed.ralph) {
+    if (runtime.config.worker_launch_mode === 'prompt') {
+      return;
+    }
     await runLinkedRalphBridge({
       teamName: runtime.teamName,
       task: parsed.task,
