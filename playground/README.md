@@ -46,6 +46,10 @@ Use `scripts/run-autoresearch-showcase.sh --list` to see the bundled launch targ
 
 ## Demos
 
+### Rust Dino GUI demo
+- Demo code: `playground/rust-dino-game/`
+- What it demonstrates: the bundled GUI dino game used by OMX team play-window flows. This is launched as a native window, not a terminal-rendered pane.
+
 ### 1. OMX self-optimization
 - Mission: `missions/in-action-cat-shellout-demo/`
 - Evaluator: `scripts/eval-in-action-cat-shellout-demo.js`

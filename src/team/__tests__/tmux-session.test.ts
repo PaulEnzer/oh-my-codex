@@ -142,7 +142,7 @@ describe('chooseTeamLeaderPaneId', () => {
 });
 
 describe('resolveTeamPlayWindowSpec', () => {
-  it('returns null when no play pane command is configured and no sibling dino-game exists', () => {
+  it('returns null when no play window command is configured and no bundled dino-game exists', () => {
     const env = {} as NodeJS.ProcessEnv;
     assert.equal(resolveTeamPlayWindowSpec('/tmp/demo', env), null);
   });
@@ -168,10 +168,10 @@ describe('resolveTeamPlayWindowSpec', () => {
     });
   });
 
-  it('auto-detects a sibling dino-game Cargo.toml when no command is configured', async () => {
+  it('auto-detects a bundled playground dino-game Cargo.toml when no command is configured', async () => {
     const root = await mkdtemp(join(tmpdir(), 'omx-play-pane-'));
     const leader = join(root, 'oh-my-codex');
-    const dino = join(root, 'dino-game');
+    const dino = join(leader, 'playground', 'rust-dino-game');
     await mkdir(leader, { recursive: true });
     await mkdir(dino, { recursive: true });
     await writeFile(join(dino, 'Cargo.toml'), '[package]\nname=\"dino-game\"\n');

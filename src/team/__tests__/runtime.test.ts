@@ -1150,10 +1150,10 @@ exit 0
     }
   });
 
-  it('startTeam launches sibling dino-game as an external play window and keeps the team HUD', async () => {
+  it('startTeam launches bundled playground dino-game as an external play window and keeps the team HUD', async () => {
     const root = await mkdtemp(join(tmpdir(), 'omx-runtime-play-pane-'));
     const cwd = join(root, 'oh-my-codex');
-    const dinoCwd = join(root, 'dino-game');
+    const dinoCwd = join(cwd, 'playground', 'rust-dino-game');
     const previousTmux = process.env.TMUX;
     const previousTmuxPane = process.env.TMUX_PANE;
     const previousLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;

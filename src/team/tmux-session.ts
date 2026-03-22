@@ -76,6 +76,17 @@ export interface TeamPlayWindowSpec {
   cwd: string;
 }
 
+function resolveBundledDinoGamePath(leaderCwd: string): string | null {
+  const candidates = [
+    resolve(leaderCwd, 'playground', 'rust-dino-game'),
+    resolve(leaderCwd, '..', 'dino-game'),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(join(candidate, 'Cargo.toml'))) return candidate;
+  }
+  return null;
+}
+
 export interface WorkerProcessLaunchSpec {
   workerCli: TeamWorkerCli;
   command: string;
@@ -314,18 +325,18 @@ export function resolveTeamPlayWindowSpec(
 ): TeamPlayWindowSpec | null {
   const cmd = String(env[OMX_TEAM_PLAY_PANE_CMD_ENV] ?? '').trim();
   if (cmd === '') {
-    const siblingDinoCwd = resolve(leaderCwd, '..', 'dino-game');
-    if (!existsSync(join(siblingDinoCwd, 'Cargo.toml'))) return null;
+    const bundledDinoCwd = resolveBundledDinoGamePath(leaderCwd);
+    if (!bundledDinoCwd) return null;
     const omxEntry = process.argv[1];
     const playWindowLaunchScript = omxEntry
       ? resolve(dirname(omxEntry), '..', 'scripts', 'team-play-window-launch.js')
       : '';
     const launchCmd = playWindowLaunchScript && existsSync(playWindowLaunchScript)
-      ? `node ${shellQuoteSingle(translatePathForMsys(playWindowLaunchScript))} --game-cwd ${shellQuoteSingle(translatePathForMsys(siblingDinoCwd))}`
+      ? `node ${shellQuoteSingle(translatePathForMsys(playWindowLaunchScript))} --game-cwd ${shellQuoteSingle(translatePathForMsys(bundledDinoCwd))}`
       : `cargo run`;
     return {
       cmd: launchCmd,
-      cwd: siblingDinoCwd,
+      cwd: bundledDinoCwd,
     };
   }
 
