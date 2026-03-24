@@ -1,6 +1,6 @@
 export const OMX_EXPLORE_CMD_ENV = 'USE_OMX_EXPLORE_CMD';
 
-const ENABLED_VALUES = new Set(['1', 'true', 'yes', 'on']);
+const DISABLED_VALUES = new Set(['0', 'false', 'no', 'off']);
 
 const SIMPLE_EXPLORATION_PATTERNS: RegExp[] = [
   /\b(where|find|locate|search|grep|ripgrep)\b/i,
@@ -20,8 +20,8 @@ const NON_EXPLORATION_PATTERNS: RegExp[] = [
 
 export function isExploreCommandRoutingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env[OMX_EXPLORE_CMD_ENV];
-  if (typeof raw !== 'string') return false;
-  return ENABLED_VALUES.has(raw.trim().toLowerCase());
+  if (typeof raw !== 'string') return true;
+  return !DISABLED_VALUES.has(raw.trim().toLowerCase());
 }
 
 export function isSimpleExplorationPrompt(text: string): boolean {
@@ -34,12 +34,15 @@ export function isSimpleExplorationPrompt(text: string): boolean {
 export function buildExploreRoutingGuidance(env: NodeJS.ProcessEnv = process.env): string {
   if (!isExploreCommandRoutingEnabled(env)) return '';
   return [
-    `**Explore Command Preference:** enabled via \`${OMX_EXPLORE_CMD_ENV}\``,
-    '- Advisory steering only: prefer `omx explore` for direct inspection by default and reserve `omx sparkshell` for qualifying read-only shell-native tasks.',
+    `**Explore Command Preference:** enabled via \`${OMX_EXPLORE_CMD_ENV}\` (default-on; opt out with \`0\`, \`false\`, \`no\`, or \`off\`)`,
+    '- Advisory steering only: agents SHOULD treat `omx explore` as the default first stop for direct inspection and SHOULD reserve `omx sparkshell` for qualifying read-only shell-native tasks.',
+    '- For simple file/symbol lookups, use `omx explore` FIRST before attempting full code analysis.',
     '- When the user asks for a simple read-only exploration task (file/symbol/pattern/relationship lookup), strongly prefer `omx explore` as the default surface.',
+    '- Explore examples: `omx explore --prompt "which files define TeamPolicy"`, `omx explore --prompt "find usages of buildExploreRoutingGuidance"`.',
+    '- SparkShell examples: use `omx sparkshell -- rg -n "TeamPolicy" src`, `omx sparkshell -- npm test`, or `omx sparkshell --tmux-pane %12` for noisy verification, bounded shell output, or tmux-pane summaries.',
     '- Keep `omx explore` prompts narrow and concrete; prefer a single lookup goal or a small related cluster, using `--prompt` for quick asks and `--prompt-file` for longer reusable briefs.',
     '- Treat `omx explore` as a shell-only allowlisted read-only path; keep edits, tests, diagnostics, MCP/web needs, and complex shell composition on the richer normal path.',
     '- Keep implementation, refactor, test, or ambiguous broad requests on the normal Codex path.',
     '- If `omx explore` is unavailable, stalls, or fails, retry with a narrower prompt or gracefully fall back to the normal path.',
-  ].join('\n');
+  ].join("\n");
 }

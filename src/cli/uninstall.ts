@@ -7,6 +7,7 @@ import { existsSync } from "fs";
 import { join, basename } from "path";
 import {
   stripExistingOmxBlocks,
+  stripOmxEnvSettings,
   stripOmxTopLevelKeys,
   stripOmxFeatureFlags,
 } from "../config/generator.js";
@@ -51,6 +52,7 @@ function detectOmxConfigArtifacts(config: string): {
   hasTuiSection: boolean;
   hasTopLevelKeys: boolean;
   hasFeatureFlags: boolean;
+  hasExploreRoutingEnv: boolean;
 } {
   const hasMcpServers = OMX_MCP_SERVERS.filter((name) =>
     new RegExp(`\\[mcp_servers\\.${name}\\]`).test(config),
@@ -77,6 +79,7 @@ function detectOmxConfigArtifacts(config: string): {
   const hasFeatureFlags =
     /^\s*multi_agent\s*=\s*true/m.test(config) ||
     /^\s*child_agents_md\s*=\s*true/m.test(config);
+  const hasExploreRoutingEnv = /^\s*USE_OMX_EXPLORE_CMD\s*=/m.test(config);
 
   return {
     hasMcpServers,
@@ -84,6 +87,7 @@ function detectOmxConfigArtifacts(config: string): {
     hasTuiSection,
     hasTopLevelKeys,
     hasFeatureFlags,
+    hasExploreRoutingEnv,
   };
 }
 
@@ -134,6 +138,9 @@ async function cleanConfig(
 
   // Strip feature flags
   config = stripOmxFeatureFlags(config);
+
+  // Strip OMX-managed env defaults
+  config = stripOmxEnvSettings(config);
 
   // Normalize trailing whitespace
   config = config.trimEnd() + "\n";

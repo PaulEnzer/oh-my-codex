@@ -8,6 +8,7 @@ Resolved setup scope: user
   [EXPLORE_HARNESS_STATUS]
   [OK] Codex home: <CODEX_HOME>
   [!!] Config: config.toml exists but no OMX entries yet (expected before first setup; run "omx setup --force" once)
+  [OK] Explore routing: enabled by default
   [!!] Prompts: prompts directory not found
   [!!] Skills: skills directory not found
   [!!] AGENTS.md: not found in <CODEX_HOME>/AGENTS.md (run omx setup --scope user)

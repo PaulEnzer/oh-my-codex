@@ -15,6 +15,7 @@ import { parse as parseToml } from '@iarna/toml';
 import { resolvePackagedExploreHarnessCommand, EXPLORE_BIN_ENV } from './explore.js';
 import { getPackageRoot } from '../utils/package.js';
 import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
+import { OMX_EXPLORE_CMD_ENV, isExploreCommandRoutingEnabled } from '../hooks/explore-routing.js';
 import { isLeaderRuntimeStale } from '../team/leader-activity.js';
 
 interface DoctorOptions {
@@ -128,6 +129,9 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
   // Check 4: Config file
   checks.push(await checkConfig(paths.configPath));
+
+  // Check 4.5: Explore routing default
+  checks.push(await checkExploreRouting(paths.configPath));
 
   // Check 5: Prompts installed
   checks.push(await checkPrompts(paths.promptsDir));
@@ -586,6 +590,59 @@ async function checkConfig(configPath: string): Promise<Check> {
     };
   } catch {
     return { name: 'Config', status: 'fail', message: 'cannot read config.toml' };
+  }
+}
+
+
+async function checkExploreRouting(configPath: string): Promise<Check> {
+  const envValue = process.env[OMX_EXPLORE_CMD_ENV];
+  if (typeof envValue === 'string' && !isExploreCommandRoutingEnabled(process.env)) {
+    return {
+      name: 'Explore routing',
+      status: 'warn',
+      message:
+        'disabled by environment override; enable with USE_OMX_EXPLORE_CMD=1 (or remove the explicit opt-out)',
+    };
+  }
+
+  if (!existsSync(configPath)) {
+    return {
+      name: 'Explore routing',
+      status: 'pass',
+      message: 'enabled by default (config.toml not found yet)',
+    };
+  }
+
+  try {
+    const content = await readFile(configPath, 'utf-8');
+    const parsed = parseToml(content) as { env?: Record<string, unknown> };
+    const configuredValue = parsed?.env?.USE_OMX_EXPLORE_CMD;
+
+    if (
+      typeof configuredValue === 'string' &&
+      !isExploreCommandRoutingEnabled({
+        USE_OMX_EXPLORE_CMD: configuredValue,
+      })
+    ) {
+      return {
+        name: 'Explore routing',
+        status: 'warn',
+        message:
+          'disabled in config.toml [env]; set USE_OMX_EXPLORE_CMD = "1" to restore default explore-first routing',
+      };
+    }
+
+    return {
+      name: 'Explore routing',
+      status: 'pass',
+      message: 'enabled by default',
+    };
+  } catch {
+    return {
+      name: 'Explore routing',
+      status: 'fail',
+      message: 'cannot read config.toml for explore routing check',
+    };
   }
 }
 

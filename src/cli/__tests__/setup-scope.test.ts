@@ -211,6 +211,8 @@ describe("omx setup scope behavior", () => {
       assert.match(configToml, /^\[agents\]$/m);
       assert.match(configToml, /^max_threads = 6$/m);
       assert.match(configToml, /^max_depth = 2$/m);
+      assert.match(configToml, /^\[env\]$/m);
+      assert.match(configToml, /^USE_OMX_EXPLORE_CMD = "1"$/m);
       const agentsMd = await readFile(agentsMdPath, "utf-8");
       assert.match(agentsMd, /\.\/\.codex\/prompts/);
       assert.match(agentsMd, /\.\/\.codex\/skills/);

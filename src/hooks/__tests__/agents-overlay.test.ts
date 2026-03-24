@@ -72,30 +72,27 @@ describe("generateOverlay", () => {
     assert.doesNotMatch(defaultOverlay, /\*\*Orchestration Mode:\*\* team/);
   });
 
-  it("adds advisory explore routing guidance only when USE_OMX_EXPLORE_CMD is enabled", async () => {
+  it("adds advisory explore routing guidance by default and hides it only on explicit opt-out", async () => {
     const previous = process.env.USE_OMX_EXPLORE_CMD;
     try {
       delete process.env.USE_OMX_EXPLORE_CMD;
+      const defaultOverlay = await generateOverlay(
+        tempDir,
+        "explore-routing-default",
+      );
+      assert.match(
+        defaultOverlay,
+        /\*\*Explore Command Preference:\*\*/,
+      );
+      assert.match(defaultOverlay, /default-on; opt out/i);
+      assert.match(defaultOverlay, /omx explore` FIRST before attempting full code analysis/i);
+
+      process.env.USE_OMX_EXPLORE_CMD = "off";
       const disabledOverlay = await generateOverlay(
         tempDir,
         "explore-routing-off",
       );
-      assert.doesNotMatch(
-        disabledOverlay,
-        /\*\*Explore Command Preference:\*\*/,
-      );
-
-      process.env.USE_OMX_EXPLORE_CMD = "1";
-      const enabledOverlay = await generateOverlay(
-        tempDir,
-        "explore-routing-on",
-      );
-      assert.match(
-        enabledOverlay,
-        /\*\*Explore Command Preference:\*\* enabled via `USE_OMX_EXPLORE_CMD`/,
-      );
-      assert.match(enabledOverlay, /strongly prefer `omx explore`/);
-      assert.match(enabledOverlay, /advisory steering/i);
+      assert.doesNotMatch(disabledOverlay, /\*\*Explore Command Preference:\*\*/);
     } finally {
       if (typeof previous === "string")
         process.env.USE_OMX_EXPLORE_CMD = previous;

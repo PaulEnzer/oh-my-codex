@@ -7,13 +7,16 @@ import {
 } from '../explore-routing.js';
 
 describe('explore-routing', () => {
-  it('treats USE_OMX_EXPLORE_CMD truthy values as enabled', () => {
+  it('defaults USE_OMX_EXPLORE_CMD to enabled and only disables explicit opt-out values', () => {
+    assert.equal(isExploreCommandRoutingEnabled({}), true);
     assert.equal(isExploreCommandRoutingEnabled({ USE_OMX_EXPLORE_CMD: '1' }), true);
     assert.equal(isExploreCommandRoutingEnabled({ USE_OMX_EXPLORE_CMD: 'true' }), true);
     assert.equal(isExploreCommandRoutingEnabled({ USE_OMX_EXPLORE_CMD: 'yes' }), true);
     assert.equal(isExploreCommandRoutingEnabled({ USE_OMX_EXPLORE_CMD: 'on' }), true);
     assert.equal(isExploreCommandRoutingEnabled({ USE_OMX_EXPLORE_CMD: '0' }), false);
-    assert.equal(isExploreCommandRoutingEnabled({}), false);
+    assert.equal(isExploreCommandRoutingEnabled({ USE_OMX_EXPLORE_CMD: 'false' }), false);
+    assert.equal(isExploreCommandRoutingEnabled({ USE_OMX_EXPLORE_CMD: 'no' }), false);
+    assert.equal(isExploreCommandRoutingEnabled({ USE_OMX_EXPLORE_CMD: 'off' }), false);
   });
 
   it('detects simple exploration prompts', () => {
@@ -31,14 +34,17 @@ describe('explore-routing', () => {
     assert.equal(isSimpleExplorationPrompt('investigate everything in this repo'), false);
   });
 
-  it('builds advisory guidance only when enabled', () => {
-    assert.equal(buildExploreRoutingGuidance({}), '');
-    const guidance = buildExploreRoutingGuidance({ USE_OMX_EXPLORE_CMD: '1' });
+  it('builds advisory guidance whenever routing is not explicitly disabled', () => {
+    const guidance = buildExploreRoutingGuidance({});
     assert.match(guidance, /USE_OMX_EXPLORE_CMD/);
-    assert.match(guidance, /strongly prefer `omx explore`/);
-    assert.match(guidance, /advisory steering/i);
-    assert.match(guidance, /--prompt/);
+    assert.match(guidance, /default-on; opt out/i);
+    assert.match(guidance, /agents SHOULD treat `omx explore` as the default first stop/i);
+    assert.match(guidance, /use `omx explore` FIRST before attempting full code analysis/i);
+    assert.match(guidance, /Explore examples:/);
+    assert.match(guidance, /SparkShell examples:/);
+    assert.match(guidance, /--prompt-file/);
     assert.match(guidance, /shell-only allowlisted read-only path/i);
-    assert.match(guidance, /narrower prompt/i);
+    assert.match(guidance, /gracefully fall back to the normal path/i);
+    assert.equal(buildExploreRoutingGuidance({ USE_OMX_EXPLORE_CMD: 'off' }), '');
   });
 });

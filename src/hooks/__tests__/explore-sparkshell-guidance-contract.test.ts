@@ -13,12 +13,13 @@ describe('explore + sparkshell guidance contract', () => {
   it('keeps AGENTS root and template aligned on conditional explore routing and opt-in sparkshell guidance', () => {
     const patterns = [
       /USE_OMX_EXPLORE_CMD/i,
-      /prefer `omx explore`/i,
+      /SHOULD treat `omx explore`|strongly prefer `omx explore`/i,
       /--prompt/i,
-      /shell-only, allowlisted, read-only path/i,
+      /shell-only, allowlisted, read-only path|shell-only allowlisted read-only path/i,
       /gracefully fall back to the normal path/i,
       /omx sparkshell --tmux-pane/i,
       /explicit opt-?in/i,
+      /When to use what/i,
     ];
 
     for (const surface of ['AGENTS.md', 'templates/AGENTS.md']) {
@@ -53,7 +54,7 @@ describe('explore + sparkshell guidance contract', () => {
     ]) {
       expectPatterns(surface, [
         /USE_OMX_EXPLORE_CMD/i,
-        /prefer `omx explore`/i,
+        /prefer `omx explore`|use `omx explore` FIRST/i,
         /fall back normally|fallback normally|graceful fallback|richer normal explore path/i,
       ]);
     }
